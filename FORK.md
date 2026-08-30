@@ -56,6 +56,30 @@ To keep upstream merges clean:
 
 Bundle ID / package: `com.angussoftware.agentschat`. URL schemes: `agents-chat` (app), `letta-mobile` (upstream OAuth callback — do not remove unless we register our own OAuth client).
 
+## Build notes (Android)
+
+**Gradle version:** Expo SDK 57 / RN 0.86 plugins are NOT Gradle 9 compatible. The `@react-native/gradle-plugin` included build uses `plugins { alias(libs.plugins...) }` which Gradle 9 removed from included build root scripts. `expo prebuild` may generate a Gradle 9.x wrapper — if so, downgrade it before building:
+
+```bash
+# After expo prebuild, before gradlew:
+sed -i 's/gradle-9\.[0-9.]*-bin/gradle-8.14.3-bin/' android/gradle/wrapper/gradle-wrapper.properties
+```
+
+This is temporary — once Expo/RN plugins support Gradle 9, the default wrapper will work and this step can be removed.
+
+**Build command:**
+```bash
+cd android && ANDROID_HOME=$HOME/Android/Sdk JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 \
+  ./gradlew app:assembleDebug -x lint -x test --build-cache -PreactNativeArchitectures=arm64-v8a
+```
+
+**Install on device:**
+```bash
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+**Node deps:** `bun install` fails on node-pty (node-gyp missing). Use `npm install --legacy-peer-deps` instead.
+
 ## License
 
 Apache-2.0 (upstream). "Agents Chat" is our name; "Letta" marks identify the service this client connects to (nominative use).

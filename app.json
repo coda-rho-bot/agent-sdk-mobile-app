@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "Bloop",
-    "slug": "bloop-agent-chat",
+    "name": "Agents Chat",
+    "slug": "agents-chat",
     "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": ["bloop", "letta-mobile"],
+    "scheme": ["agents-chat", "letta-mobile"],
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "platforms": [
@@ -14,14 +14,14 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.example.bloop"
+      "bundleIdentifier": "com.angussoftware.agentschat"
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E8823C",
+        "backgroundColor": "#004F50",
         "foregroundImage": "./assets/images/icon-foreground.png"
       },
-      "package": "com.example.bloop",
+      "package": "com.angussoftware.agentschat",
       "edgeToEdgeEnabled": true
     },
     "plugins": [

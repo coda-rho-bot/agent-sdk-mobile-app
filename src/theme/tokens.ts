@@ -44,7 +44,7 @@ export const palettes: Record<ThemeName, Palette> = {
     ink: "#202020",
     ink2: "#5A5E63",
     ink3: "#8B9096",
-    accent: "#3939BD",
+    accent: "#004F50",
     run: "#1B7F5C",
     wait: "#A66A16",
     danger: "#B4362B",
@@ -58,7 +58,7 @@ export const palettes: Record<ThemeName, Palette> = {
     ink: "#ECEDEF",
     ink2: "#A2A6AC",
     ink3: "#6E7176",
-    accent: "#8F9DFF",
+    accent: "#8CE3E2",
     run: "#3ECf95",
     wait: "#E3A33A",
     danger: "#E8604F",
@@ -87,8 +87,8 @@ export const bloopColors: readonly string[] = [
   "#3D8F73", // pine
 ];
 
-/** The app's own mark: a blue bloop on warm orange. */
-export const brandMark = { bloop: "#4B6FE8", field: "#E8823C" } as const;
+/** The app's own mark: a deep-teal bloop on light teal (Angus Software brand). */
+export const brandMark = { bloop: "#004F50", field: "#9CF1F0" } as const;
 
 export const type = {
   display: { fontSize: 28, fontWeight: "700", letterSpacing: -0.5, lineHeight: 34 },

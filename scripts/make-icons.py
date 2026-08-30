@@ -14,8 +14,8 @@ Keep in sync with `brandMark` in src/theme/tokens.ts.
 """
 from PIL import Image, ImageDraw
 
-BLOOP = (75, 111, 232)   # tokens.brandMark.bloop
-FIELD = (232, 130, 60)   # tokens.brandMark.field
+BLOOP = (0, 79, 80)      # tokens.brandMark.bloop  (#004F50, Angus teal)
+FIELD = (156, 241, 240)  # tokens.brandMark.field  (#9CF1F0, Angus light teal)
 
 
 def draw_bloop(img: Image.Image, cx: float, cy: float, r: float, fill) -> None:

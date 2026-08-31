@@ -39,6 +39,8 @@ class BackgroundPollService : Service() {
   private var scheduler: ScheduledExecutorService? = null
   private val notifiedRunIds: MutableSet<String> = HashSet()
   private var conversations: List<ConversationSpec> = emptyList()
+  /** conversationId → spec, for O(1) sweep filtering. */
+  private val watched = HashMap<String, ConversationSpec>()
   private var baseUrl: String = ""
   private var token: String = ""
   private var pollStartedAt: Long = 0L
@@ -52,6 +54,8 @@ class BackgroundPollService : Service() {
       return START_NOT_STICKY
     }
     conversations = parseConversations(intent.getStringExtra("conversations"))
+    watched.clear()
+    for (c in conversations) watched[c.conversationId] = c
     baseUrl = intent.getStringExtra("baseUrl") ?: "https://api.letta.com"
     token = intent.getStringExtra("token") ?: ""
     pollStartedAt = intent.getLongExtra("pollStartedAt", System.currentTimeMillis())
@@ -98,43 +102,54 @@ class BackgroundPollService : Service() {
 
   /**
    * Turn-end notification semantics: agentic turns spawn a chain of runs —
-   * one user-message run, then one "approval" run per tool round. Mid-turn
+   * one user-message run, then one approval run per tool round. Mid-turn
    * approval runs have status "completed" but stop_reason "requires_approval";
    * the run that actually ENDS the turn has stop_reason "end_turn" (or an
    * error/limit reason). Notify only on those turn-boundary runs — one
-   * notification per turn, content = the user message that started it.
+   * notification per turn, content = the agent's final reply.
+   *
+   * Cost model: ONE unfiltered /v1/runs sweep per cycle regardless of how
+   * many conversations are watched — run objects carry conversation_id, so
+   * the watched-set filter is client-side. Polling cost stays flat as the
+   * watched set grows.
    */
-  private fun pollConversation(spec: ConversationSpec): Boolean {
-    val body = httpGet("$baseUrl/v1/runs?conversation_id=${spec.conversationId}&limit=50")
-    val runs = JSONArray(body)
-    if (runs.length() == 0) return false
-    val top = runs.optJSONObject(0) ?: return false
-    val id = top.optString("id")
-    val status = top.optString("status")
-    if (id.isEmpty()) return false
-    if (status != "completed" && status != "failed" && status != "cancelled") return false // turn in flight
-    // Mid-turn approval runs are "completed" but awaiting the next round — skip.
-    val stopReason = top.optString("stop_reason")
-    if (stopReason == "requires_approval") return false
-    val completedAt = parseIso(top.optString("completed_at"))
-    // Only runs finishing after polling began (5s margin for clock skew).
-    if (completedAt != null && completedAt < pollStartedAt - 5_000L) return false
-    val isNew: Boolean
-    synchronized(notifiedRunIds) {
-      isNew = notifiedRunIds.add(id)
-      if (isNew && notifiedRunIds.size > 300) notifiedRunIds.clear()
+  private fun pollOnce() {
+    var notifications = 0
+    try {
+      val body = httpGet("$baseUrl/v1/runs?limit=$SWEEP_LIMIT")
+      val runs = JSONArray(body) // newest first
+      for (i in 0 until runs.length()) {
+        val run = runs.optJSONObject(i) ?: continue
+        val id = run.optString("id")
+        val convId = run.optString("conversation_id")
+        if (id.isEmpty() || convId.isEmpty()) continue
+        val spec = watched[convId] ?: continue // not a watched conversation
+        val status = run.optString("status")
+        if (status != "completed" && status != "failed" && status != "cancelled") continue
+        val stopReason = run.optString("stop_reason")
+        if (stopReason == "requires_approval") continue // mid-turn
+        val completedAt = parseIso(run.optString("completed_at"))
+        // Only runs finishing after polling began (5s margin for clock skew).
+        if (completedAt != null && completedAt < pollStartedAt - 5_000L) continue
+        val isNew: Boolean
+        synchronized(notifiedRunIds) {
+          isNew = notifiedRunIds.add(id)
+          if (isNew && notifiedRunIds.size > 500) notifiedRunIds.clear()
+        }
+        if (!isNew) continue
+        val reply = findLatestAssistantText(convId, run.optString("created_at"))?.let { truncate(it) }
+        val trigger = if (reply != null) null else findUserTrigger(runs, convId)?.let { truncate(it) }
+        val fallback = if (status == "completed") "Run complete" else "Run ended with an error"
+        Log.i(TAG, "turn ended (run ${id.takeLast(8)}, $status/$stopReason) conv=${convId.takeLast(8)} — posting notification")
+        postCompletionNotification(spec, reply ?: trigger ?: fallback)
+        notifications++
+        if (notifications >= 3) break // don't storm on catch-up sweeps
+      }
+    } catch (e: Exception) {
+      // Transient network/API errors — retry next cycle.
+      Log.w(TAG, "sweep failed: ${e.message}")
     }
-    if (!isNew) return false
-    // Content: the agent's final reply for this run (last assistant message
-    // at/after the run's start). Falls back to the triggering user message,
-    // then "Run complete".
-    val reply = findLatestAssistantText(spec.conversationId, top.optString("created_at"))?.let { truncate(it) }
-    val trigger = if (reply != null) null else findUserTrigger(runs)?.let { truncate(it) }
-    val fallback = if (status == "completed") "Run complete" else "Run ended with an error"
-    val bodyText = reply ?: trigger ?: fallback
-    Log.i(TAG, "turn ended (run $id, $status/$stopReason) conv=${spec.conversationId.takeLast(8)} — posting notification")
-    postCompletionNotification(spec, bodyText)
-    return true
+    Log.d(TAG, "sweep done ($notifications notified)")
   }
 
   /**
@@ -163,10 +178,12 @@ class BackgroundPollService : Service() {
     }
   }
 
-  /** Walk the run list (newest first) for the latest user-role initial message text. */
-  private fun findUserTrigger(runs: JSONArray): String? {
+  /** Walk the run list (newest first, cross-conversation) for the latest
+   * user-role initial message in the given conversation. */
+  private fun findUserTrigger(runs: JSONArray, conversationId: String): String? {
     for (i in 0 until runs.length()) {
       val run = runs.optJSONObject(i) ?: continue
+      if (run.optString("conversation_id") != conversationId) continue
       val msgs = run.optJSONObject("request_config")?.optJSONArray("initial_messages") ?: continue
       if (msgs.length() == 0) continue
       val first = msgs.optJSONObject(0) ?: continue
@@ -194,19 +211,6 @@ class BackgroundPollService : Service() {
   private fun truncate(text: String): String {
     val oneLine = text.replace('\n', ' ').trim()
     return if (oneLine.length <= 120) oneLine else oneLine.take(119) + "…"
-  }
-
-  private fun pollOnce() {
-    var notifications = 0
-    for (spec in conversations) {
-      try {
-        if (pollConversation(spec)) notifications++
-      } catch (e: Exception) {
-        // Transient network/API errors — retry next cycle.
-        Log.w(TAG, "poll failed conv=${spec.conversationId.takeLast(8)}: ${e.message}")
-      }
-    }
-    Log.d(TAG, "poll cycle done (${conversations.size} convs, $notifications notified)")
   }
 
   private fun httpGet(url: String): String {
@@ -322,5 +326,7 @@ class BackgroundPollService : Service() {
     const val FGS_NOTIFICATION_ID = 93001
     const val FGS_CHANNEL_ID = "background_polling"
     const val CONVERSATIONS_CHANNEL_ID = "conversations"
+    /** Runs fetched per sweep — one request covers every watched conversation. */
+    const val SWEEP_LIMIT = 50
   }
 }

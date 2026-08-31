@@ -8,6 +8,7 @@ import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Alert, FlatList, RefreshControl, StyleSheet, TextInput, View } from "react-native";
 
+import { Dropdown } from "../components/ui/Dropdown";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Header, Screen } from "../components/ui/Screen";
 import { Sheet } from "../components/ui/Sheet";
@@ -15,13 +16,17 @@ import { SkeletonList } from "../components/ui/Skeleton";
 import { StatusDot } from "../components/ui/StatusDot";
 import { Text } from "../components/ui/Text";
 import { Touchable } from "../components/ui/Touchable";
+import { ModelSheet } from "../components/chat/ModelSheet";
 import {
+  applyModelToConversations,
   canDeleteConversations,
   createConversation,
   deleteConversation,
   listConversations,
+  listModels,
   renameConversation,
   type ConversationSummary,
+  type ModelOption,
 } from "../lib/letta/api";
 import {
   conversationActivity,
@@ -30,6 +35,28 @@ import {
 } from "../lib/letta/ChatSession";
 import { getSecret } from "../lib/profiles/profiles";
 import { useProfiles } from "../lib/profiles/ProfilesContext";
+import {
+  NotificationMode,
+  labelWithResolution,
+  resolveMode,
+  loadAppDefault,
+  loadAgentSetting,
+  saveAgentSetting,
+  loadServerSetting,
+  resetAgentDownstreamNotifications,
+} from "../lib/notifications";
+import {
+  PermissionCascadeMode,
+  type PermissionCascadeValue,
+  permLabelWithResolution,
+  permissionDetail,
+  loadAppPermDefault,
+  loadAgentPerm,
+  saveAgentPerm,
+  loadServerPerm,
+  resolvePermission,
+  resetAgentDownstreamPermissions,
+} from "../lib/permissions";
 import { useTheme } from "../theme/ThemeProvider";
 import { radius, space } from "../theme/tokens";
 
@@ -106,6 +133,144 @@ export default function ConversationsScreen() {
   const renameSheetRef = useRef<BottomSheetModal>(null);
   const [renaming, setRenaming] = useState<ConversationSummary | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
+
+  // Agent settings sheet state — agent-level notification + permission defaults,
+  // plus reset for all conversation overrides downstream.
+  const agentSettingsRef = useRef<BottomSheetModal>(null);
+  const [agentNotifSetting, setAgentNotifSetting] = useState<NotificationMode>(NotificationMode.SERVER_DEFAULT);
+  const [agentNotifResolved, setAgentNotifResolved] = useState<NotificationMode>(NotificationMode.OFF);
+  const [agentNotifServer, setAgentNotifServer] = useState<NotificationMode>(NotificationMode.APP_DEFAULT);
+  const [agentNotifApp, setAgentNotifApp] = useState<NotificationMode>(NotificationMode.OFF);
+  const [agentPermSetting, setAgentPermSetting] = useState<PermissionCascadeValue>(PermissionCascadeMode.SERVER_DEFAULT);
+  const [agentPermResolved, setAgentPermResolved] = useState<PermissionCascadeValue>(PermissionCascadeMode.STANDARD);
+  const [agentPermServer, setAgentPermServer] = useState<PermissionCascadeValue>(PermissionCascadeMode.APP_DEFAULT);
+  const [agentPermApp, setAgentPermApp] = useState<PermissionCascadeValue>(PermissionCascadeMode.STANDARD);
+
+  useEffect(() => {
+    if (!agentId) return;
+    let cancelled = false;
+    void (async () => {
+      const [notifSetting, notifServer, notifApp, permSetting, permServer, permApp] = await Promise.all([
+        loadAgentSetting(agentId),
+        activeProfile ? loadServerSetting(activeProfile.id) : Promise.resolve(NotificationMode.APP_DEFAULT),
+        loadAppDefault(),
+        loadAgentPerm(agentId),
+        activeProfile ? loadServerPerm(activeProfile.id) : Promise.resolve(PermissionCascadeMode.APP_DEFAULT),
+        loadAppPermDefault(),
+      ]);
+      if (cancelled) return;
+      setAgentNotifSetting(notifSetting);
+      setAgentNotifServer(notifServer);
+      setAgentNotifApp(notifApp);
+      setAgentNotifResolved(resolveMode(notifSetting, notifServer, notifApp, notifApp));
+      setAgentPermSetting(permSetting);
+      setAgentPermServer(permServer);
+      setAgentPermApp(permApp);
+      setAgentPermResolved(resolvePermission(permSetting, permServer, permApp, permApp));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, activeProfile]);
+
+  const openAgentSettings = () => {
+    agentSettingsRef.current?.present();
+  };
+
+  const selectAgentNotif = async (mode: NotificationMode) => {
+    setAgentNotifSetting(mode);
+    setAgentNotifResolved(resolveMode(mode, agentNotifServer, agentNotifApp, agentNotifApp));
+    await saveAgentSetting(agentId, mode);
+  };
+
+  const selectAgentPerm = async (mode: PermissionCascadeValue) => {
+    setAgentPermSetting(mode);
+    setAgentPermResolved(resolvePermission(mode, agentPermServer, agentPermApp, agentPermApp));
+    await saveAgentPerm(agentId, mode);
+  };
+
+  // Reset downstream for this agent: clears conversation-level overrides for
+  // every conversation under this agent.
+  const confirmReset = (title: string, message: string, run: () => Promise<void>) =>
+    Alert.alert(title, message, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Reset", style: "destructive", onPress: () => void run() },
+    ]);
+
+  const resetConvNotifDownstream = async () => {
+    if (!activeProfile) return;
+    try {
+      const secret = (await getSecret(activeProfile.id)) ?? "";
+      const convs = await listConversations({ profile: activeProfile, secret }, agentId, { limit: 100 });
+      const convIds = convs.map((c) => c.id);
+      await resetAgentDownstreamNotifications(convIds);
+      Alert.alert("Reset complete", `Cleared notification overrides for ${convIds.length} conversations on ${agentName}.`);
+    } catch (e) {
+      Alert.alert("Couldn't reset", e instanceof Error ? e.message : undefined);
+    }
+  };
+
+  const resetConvPermDownstream = async () => {
+    if (!activeProfile) return;
+    try {
+      const secret = (await getSecret(activeProfile.id)) ?? "";
+      const convs = await listConversations({ profile: activeProfile, secret }, agentId, { limit: 100 });
+      const convIds = convs.map((c) => c.id);
+      await resetAgentDownstreamPermissions(convIds);
+      Alert.alert("Reset complete", `Cleared permission overrides for ${convIds.length} conversations on ${agentName}.`);
+    } catch (e) {
+      Alert.alert("Couldn't reset", e instanceof Error ? e.message : undefined);
+    }
+  };
+
+  // Downstream model application — pick a model, then apply it to every
+  // conversation on this agent. The settings sheet is dismissed before the
+  // picker presents and re-presented when the picker closes (stacked-sheet
+  // minimize/restore is unreliable, so this flow is fully explicit).
+  const modelPickRef = useRef<BottomSheetModal>(null);
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [chosenModelHandle, setChosenModelHandle] = useState<string | null>(null);
+  const [applyingModel, setApplyingModel] = useState(false);
+  const [pickFromSettings, setPickFromSettings] = useState(false);
+  const chosenModelLabel = models.find((m) => m.handle === chosenModelHandle)?.label ?? null;
+
+  const openModelPick = () => {
+    if (!agentSettingsRef.current) return;
+    setPickFromSettings(true);
+    agentSettingsRef.current.dismiss();
+    modelPickRef.current?.present();
+  };
+
+  useEffect(() => {
+    if (!activeProfile) return;
+    void (async () => {
+      try {
+        const secret = (await getSecret(activeProfile.id)) ?? "";
+        setModels(await listModels({ profile: activeProfile, secret }));
+      } catch {
+        setModels([]);
+      }
+    })();
+  }, [activeProfile]);
+
+  const applyModelDownstream = async () => {
+    if (!activeProfile || !chosenModelHandle) return;
+    setApplyingModel(true);
+    try {
+      const secret = (await getSecret(activeProfile.id)) ?? "";
+      const convs = await listConversations({ profile: activeProfile, secret }, agentId, { limit: 100 });
+      const ids = convs.map((c) => c.id);
+      const { updated, failed } = await applyModelToConversations({ profile: activeProfile, secret }, ids, chosenModelHandle);
+      Alert.alert(
+        failed > 0 ? "Applied with failures" : "Model applied",
+        `${updated} conversation${updated === 1 ? "" : "s"} set to ${chosenModelLabel ?? chosenModelHandle}${failed > 0 ? `, ${failed} failed` : ""}.`,
+      );
+    } catch (e) {
+      Alert.alert("Couldn't apply model", e instanceof Error ? e.message : undefined);
+    } finally {
+      setApplyingModel(false);
+    }
+  };
 
   const load = useCallback(async () => {
     if (!activeProfile || !agentId) return;
@@ -245,11 +410,23 @@ export default function ConversationsScreen() {
           </Text>
         }
         trailing={
-          <Touchable accessibilityLabel="New conversation" accessibilityRole="button" onPress={startNew} style={styles.add}>
-            <Text role="title" tone="accent">
-              ＋
-            </Text>
-          </Touchable>
+          <View style={styles.headerActions}>
+            <Touchable
+              accessibilityLabel="Agent settings"
+              accessibilityRole="button"
+              onPress={openAgentSettings}
+              style={styles.gear}
+            >
+              <Text role="title" ink={2}>
+                ⚙
+              </Text>
+            </Touchable>
+            <Touchable accessibilityLabel="New conversation" accessibilityRole="button" onPress={startNew} style={styles.add}>
+              <Text role="title" tone="accent">
+                ＋
+              </Text>
+            </Touchable>
+          </View>
         }
       />
       {conversations !== null && conversations.length > 0 ? (
@@ -335,6 +512,159 @@ export default function ConversationsScreen() {
           </Text>
         </Touchable>
       </Sheet>
+
+      <Sheet ref={agentSettingsRef} title={agentName} scroll>
+        <Dropdown
+          label="Notification default"
+          value={agentNotifSetting}
+          options={
+            (
+              [
+                NotificationMode.OFF,
+                NotificationMode.MOBILE_ONLY,
+                NotificationMode.ALL_MESSAGES,
+                NotificationMode.SERVER_DEFAULT,
+                NotificationMode.APP_DEFAULT,
+              ] as NotificationMode[]
+            ).map((option) => ({
+              value: option,
+              label: labelWithResolution(option, agentNotifResolved),
+              danger: option === NotificationMode.OFF,
+            }))
+          }
+          onSelect={(mode) => void selectAgentNotif(mode)}
+        />
+        <Text role="sub" ink={3} style={styles.permHint}>
+          Default for this agent's conversations. Individual conversations can override this in the chat.
+        </Text>
+
+        <Touchable
+          accessibilityRole="button"
+          accessibilityLabel="Reset all conversation notification overrides to agent default"
+          onPress={() =>
+            confirmReset(
+              "Reset conversation notifications?",
+              "Clears notification overrides for all conversations on this agent. They will inherit from the agent and server defaults.",
+              resetConvNotifDownstream,
+            )
+          }
+          style={styles.resetBtn}
+        >
+          <Text role="body" tone="danger">
+            Reset all conversation notification overrides
+          </Text>
+        </Touchable>
+
+        <View style={styles.sectionDivider} />
+
+        <Dropdown
+          label="Permission default"
+          value={agentPermSetting}
+          options={
+            (
+              [
+                PermissionCascadeMode.STRICT,
+                PermissionCascadeMode.STANDARD,
+                PermissionCascadeMode.ACCEPT_EDITS,
+                PermissionCascadeMode.UNRESTRICTED,
+                PermissionCascadeMode.SERVER_DEFAULT,
+                PermissionCascadeMode.APP_DEFAULT,
+              ] as PermissionCascadeValue[]
+            ).map((option) => ({
+              value: option,
+              label: permLabelWithResolution(option, agentPermResolved),
+              detail: permissionDetail(option),
+              danger: option === PermissionCascadeMode.UNRESTRICTED,
+            }))
+          }
+          onSelect={(mode) => void selectAgentPerm(mode)}
+        />
+        <Text role="sub" ink={3} style={styles.permHint}>
+          Default for this agent's conversations. Individual conversations can override this in the chat.
+        </Text>
+
+        <Touchable
+          accessibilityRole="button"
+          accessibilityLabel="Reset all conversation permission overrides to agent default"
+          onPress={() =>
+            confirmReset(
+              "Reset conversation permissions?",
+              "Clears permission overrides for all conversations on this agent. They will inherit from the agent and server defaults.",
+              resetConvPermDownstream,
+            )
+          }
+          style={styles.resetBtn}
+        >
+          <Text role="body" tone="danger">
+            Reset all conversation permission overrides
+          </Text>
+        </Touchable>
+
+        <View style={styles.sectionDivider} />
+
+        <Text role="micro" ink={3} style={styles.sectionLabel}>
+          Model
+        </Text>
+        <Touchable
+          accessibilityRole="button"
+          accessibilityLabel={chosenModelLabel ? `Model: ${chosenModelLabel}` : "Choose a model"}
+          onPress={openModelPick}
+          style={styles.modelPickBtn}
+        >
+          <View style={styles.modelPickInner}>
+            <View style={styles.modelPickText}>
+              <Text role="body">{chosenModelLabel ?? "Choose a model…"}</Text>
+              {chosenModelHandle ? (
+                <Text role="sub" ink={3} mono numberOfLines={1}>
+                  {chosenModelHandle}
+                </Text>
+              ) : (
+                <Text role="sub" ink={3}>
+                  Applies to every conversation on this agent
+                </Text>
+              )}
+            </View>
+            <Text role="body" ink={3}>
+              ▾
+            </Text>
+          </View>
+        </Touchable>
+        <Touchable
+          accessibilityRole="button"
+          accessibilityLabel="Apply model to all conversations on this agent"
+          disabled={!chosenModelHandle || applyingModel}
+          onPress={() =>
+            confirmReset(
+              "Apply model to all conversations?",
+              `Sets every conversation on ${agentName} to ${chosenModelLabel}. Conversations already on this model are re-set harmlessly.`,
+              applyModelDownstream,
+            )
+          }
+          style={[styles.applyBtn, (!chosenModelHandle || applyingModel) && { opacity: 0.5 }]}
+        >
+          <Text role="body" tone="accent">
+            {applyingModel ? "Applying…" : "Apply model to all conversations"}
+          </Text>
+        </Touchable>
+      </Sheet>
+
+      <ModelSheet
+        ref={modelPickRef}
+        models={models}
+        currentModel={chosenModelHandle}
+        currentEffort={null}
+        onSelect={() => {}}
+        onPick={(handle) => {
+          setChosenModelHandle(handle);
+          modelPickRef.current?.dismiss();
+        }}
+        onSheetDismiss={() => {
+          if (pickFromSettings) {
+            setPickFromSettings(false);
+            agentSettingsRef.current?.present();
+          }
+        }}
+      />
     </Screen>
   );
 }
@@ -346,6 +676,21 @@ const styles = StyleSheet.create({
   rowText: { flex: 1, gap: 2 },
   divider: { height: StyleSheet.hairlineWidth },
   add: { paddingHorizontal: space.sm },
+  gear: { paddingHorizontal: space.sm, marginRight: space.xs },
+  headerActions: { flexDirection: "row", alignItems: "center" },
+  sectionLabel: { paddingTop: space.sm, paddingBottom: 2 },
+  sectionDivider: { height: StyleSheet.hairlineWidth, marginVertical: space.md, backgroundColor: "transparent" },
+  permHint: { paddingTop: space.md, fontStyle: "italic" },
+  resetBtn: { paddingVertical: space.sm, alignItems: "center" },
+  modelPickBtn: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.row,
+    paddingHorizontal: space.md,
+    paddingVertical: 9,
+  },
+  modelPickInner: { flexDirection: "row", alignItems: "center", gap: space.sm },
+  modelPickText: { flex: 1, gap: 1 },
+  applyBtn: { paddingVertical: space.sm, alignItems: "center" },
   footer: { textAlign: "center", paddingVertical: space.md },
   searchWrap: { paddingHorizontal: space.gutter, paddingBottom: space.sm },
   search: {

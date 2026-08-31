@@ -21,11 +21,19 @@ import { createTranscriptAccumulator } from "@letta-ai/letta-agent-sdk/client";
 
 import { toImageContent, type Attachment } from "./attachments";
 import type { Profile } from "../profiles/profiles";
-import { getConversationModel, isAuthError, listConversationMessages, sdkClient } from "./api";
+import { getConversationModel, isAuthError, listConversationMessages, listConversationRuns, sdkClient } from "./api";
 import { emptyChat, type ApprovalRequest, type ChatSnapshot, type PermissionMode, type ToolStatus, type TranscriptItem } from "./model";
 import { patch } from "./mockSession";
 import { contentToText, formatToolInput } from "./toolText";
 import { newestTextKey, projectRows, type ProjectionState } from "./transcriptProjection";
+import {
+  resolveEffectivePermission,
+  saveConversationPerm,
+  toSdkPermissionMode,
+  isConcretePerm,
+  PermissionCascadeMode,
+  type PermissionCascadeValue,
+} from "../permissions";
 
 export type SnapshotListener = (snapshot: ChatSnapshot) => void;
 
@@ -64,6 +72,11 @@ export type ConversationActivity = "running" | "awaiting_approval";
 const activityByConversation = new Map<string, ConversationActivity>();
 const activityListeners = new Set<() => void>();
 
+/** Terminal run statuses (Letta runs API): created/running are in-flight. */
+function isTerminalRun(status: string): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
 function publishActivity(conversationId: string, activity: ConversationActivity | null): void {
   const previous = activityByConversation.get(conversationId) ?? null;
   if (previous === activity) return;
@@ -85,6 +98,7 @@ export function subscribeConversationActivity(listener: () => void): () => void 
 export class ChatSession {
   private conn: { profile: Profile; secret: string };
   private conversationId: string;
+  private agentId: string;
   private session: LettaCodeSession | null = null;
   private snapshot: ChatSnapshot;
   private listeners = new Set<SnapshotListener>();
@@ -123,6 +137,13 @@ export class ChatSession {
   private counter = 0;
   /** Attachments behind pending local echoes, so retry re-sends the images too. */
   private pendingAttachments = new Map<string, Attachment[]>();
+  /**
+   * Set when we're re-applying a saved/default permission mode. While set,
+   * applyDeviceStatus won't clobber permissionMode with the server's stale
+   * value — the restore pushes our mode to the server, and the flag clears
+   * once the server confirms it back.
+   */
+  private permRestoreInFlight = false;
   private approvalResolvers = new Map<
     string,
     (response: { behavior: "allow" } | { behavior: "deny"; message: string }) => void
@@ -130,9 +151,36 @@ export class ChatSession {
   /** Resolved approvals waiting for post-decision stream traffic. */
   private activityWaiters = new Set<{ resolve: () => void; reject: (error: Error) => void }>();
 
-  private constructor(conn: { profile: Profile; secret: string }, conversationId: string) {
+  // --- Notification hooks (adapted from KMP client ChatScreen.kt) ---
+  /** True when the chat screen is visible — notifications fire only when off-screen. */
+  isScreenVisible = false;
+  /** Fired when a run started from THIS app completes (success or failure). */
+  onTurnCompleted: ((success: boolean) => void) | null = null;
+  /** Fired when a run started from ANOTHER client completes. */
+  onExternalRunCompleted: ((success: boolean) => void) | null = null;
+  /** True while an externally-initiated run is streaming into this session.
+   *  The server never sends a `result` for runs this client didn't start —
+   *  external completion is tracked via loop_status transitions instead. */
+  private externalRunActive = false;
+  private externalRunSawError = false;
+  // --- Background external-run polling ---
+  // The relay does not fan out cross-client events (no deltas, loop_status,
+  // or result reach this session for runs started elsewhere), so while the
+  // app is backgrounded with notifications on, the conversation's runs are
+  // polled via REST to detect external-run completion.
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private pollStartedAt: number | null = null;
+  private notifiedRunIds = new Set<string>();
+  /** Fired when sending a user message fails (e.g. socket closed) — the
+   *  bubble is marked "Not sent · Tap to retry". */
+  onSendFailed: ((reason: string) => void) | null = null;
+  /** True while a locally-initiated run is in flight (distinguishes local vs external). */
+  private localRunInFlight = false;
+
+  private constructor(conn: { profile: Profile; secret: string }, conversationId: string, agentId: string) {
     this.conn = conn;
     this.conversationId = conversationId;
+    this.agentId = agentId;
     this.snapshot = { ...emptyChat, hydrating: true };
   }
 
@@ -142,9 +190,14 @@ export class ChatSession {
    * a cloud session provisions a sandbox, which is too heavy to pay for just
    * reading a conversation (see SDK-FEEDBACK.md #3).
    */
-  static open(conn: { profile: Profile; secret: string }, conversationId: string): ChatSession {
-    const chat = new ChatSession(conn, conversationId);
+  static open(conn: { profile: Profile; secret: string }, conversationId: string, agentId: string): ChatSession {
+    const chat = new ChatSession(conn, conversationId, agentId);
     void chat.hydrate();
+    // Eagerly restore the saved permission mode into the snapshot so the chip
+    // shows the right value even before the SDK session is created (lazy, on
+    // first send). Without this, opening a conversation shows "Standard" until
+    // the user sends a message — the saved mode is invisible.
+    void chat.restorePermissionModeIntoSnapshot();
     return chat;
   }
 
@@ -152,13 +205,17 @@ export class ChatSession {
   private ensureSession(): LettaCodeSession {
     if (this.session) return this.session;
     const client = sdkClient(this.conn);
-    // Cloud sessions execute in an SDK-managed sandbox (the SDK default).
-    // TODO(sdk) BUG: routing to an online environment via
-    // resumeSession(id, { environment }) fails against production — cloud-api
-    // closes the status socket with 1013 "Listener connection unavailable"
-    // when the SDK sends runtime_start, even with the listener online (see
-    // SDK-FEEDBACK.md). Re-enable pickCloudEnvironment() once fixed.
+    // Cloud sessions route to the profile's selected computer when one is
+    // set; otherwise the SDK provisions a managed sandbox (its default).
+    // Strip the display-only `name` field — the SDK's ComputerSelector type
+    // doesn't have a { connectionId, name } variant.
+    const raw = this.conn.profile.computerSelector;
+    const computer =
+      raw && typeof raw === "object" && "connectionId" in raw
+        ? { connectionId: raw.connectionId }
+        : raw;
     this.session = client.resumeSession(this.conversationId, {
+      ...(computer ? { computer } : {}),
       // Tool approvals surface as an ApprovalRequest in the snapshot; the
       // ApprovalCard resolves it via resolveApproval(). The run stays in
       // awaiting_approval until the user decides.
@@ -174,6 +231,71 @@ export class ChatSession {
     void this.consume();
     this.watchDeviceStatus(this.session);
     return this.session;
+  }
+
+  /**
+   * Attach the live session before any local send: initializes the transport
+   * (getDeviceStatus resolves after initialize) so external run traffic —
+   * and its completion notifications — reach the app while the chat is open
+   * but the user hasn't sent anything from this device yet.
+   */
+  warmup(): void {
+    this.ensureSession();
+    void this.session?.getDeviceStatus().catch(() => {
+      // Connection state already surfaces through the session's own paths.
+    });
+  }
+
+  /**
+   * Begin REST polling of this conversation's runs (for cross-client run
+   * completion notifications while backgrounded). No-op while already
+   * polling; stopBackgroundPolling() ends it.
+   */
+  startBackgroundPolling(): void {
+    if (this.pollTimer || this.closed) return;
+    this.pollStartedAt = Date.now();
+    void this.pollExternalRun();
+    this.pollTimer = setInterval(() => this.pollExternalRun(), 20_000);
+  }
+
+  stopBackgroundPolling(): void {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+    this.pollStartedAt = null;
+  }
+
+  /** Snapshot of run IDs already notified by the stream (for the background poller). */
+  getNotifiedRunIds(): string[] {
+    return Array.from(this.notifiedRunIds);
+  }
+
+  private pollExternalRun(): void {
+    void (async () => {
+      if (this.closed) {
+        this.stopBackgroundPolling();
+        return;
+      }
+      try {
+        const runs = await listConversationRuns(this.conn, this.conversationId, { limit: 5 });
+        for (const run of runs) {
+          // Only terminal runs (completed/failed/cancelled) are completion
+          // candidates — skip in-flight ones.
+          if (!isTerminalRun(run.status)) continue;
+          const completedAt = run.completed_at ? Date.parse(run.completed_at) : 0;
+          // Only runs finishing after polling began are ones we could have
+          // observed mid-flight — earlier completions predate this session.
+          if (this.pollStartedAt !== null && completedAt < this.pollStartedAt - 5_000) continue;
+          if (this.notifiedRunIds.has(run.id)) continue;
+          this.notifiedRunIds.add(run.id);
+          if (this.notifiedRunIds.size > 100) this.notifiedRunIds.clear();
+          if (this.onExternalRunCompleted) this.onExternalRunCompleted(run.status === "completed");
+        }
+      } catch {
+        // Transient network/API errors — the next tick retries.
+      }
+    })();
   }
 
   subscribe(listener: SnapshotListener): () => void {
@@ -206,6 +328,7 @@ export class ChatSession {
     // The turn starts when the user sends; loop_status and the device's own
     // status stay authoritative from here.
     if (this.snapshot.run === "idle") this.commit(patch(this.snapshot, { run: "running" }));
+    this.localRunInFlight = true;
     try {
       // The SDK takes either a string or a multimodal content array; images
       // lead so the model reads them as context for the instruction.
@@ -221,12 +344,14 @@ export class ChatSession {
       // Fully handled here (no re-throw): the failed bubble + error row ARE
       // the error report, and composer call sites fire-and-forget.
       this.markEcho(otid, { failed: true });
+      const reason = e instanceof Error ? e.message : "Send failed.";
       this.commit(
         this.appendError(
           patch(this.project(this.snapshot), { run: "idle" }),
-          e instanceof Error ? e.message : "Send failed.",
+          reason,
         ),
       );
+      if (this.onSendFailed) this.onSendFailed(reason);
       return;
     }
     this.pendingAttachments.delete(otid);
@@ -436,6 +561,10 @@ export class ChatSession {
 
   /** Change the runtime permission mode (SDK 0.3.0 #208 write, 0.3.1 #212 read). */
   async setPermissionMode(mode: PermissionMode): Promise<void> {
+    this.permRestoreInFlight = true;
+    // Safety: if the server never confirms our mode (e.g. silent failure),
+    // clear the flag after 5s so device status updates resume normally.
+    setTimeout(() => { this.permRestoreInFlight = false; }, 5000);
     await this.ensureSession().changeDeviceState({ permissionMode: mode });
     // The authoritative value lands via the next device-status update; show
     // the pending value immediately so the sheet feels responsive.
@@ -448,6 +577,30 @@ export class ChatSession {
         },
       }),
     );
+    // Persist per-conversation so reopening restores the user's choice.
+    void saveConversationPerm(this.conversationId, mode).catch(() => {});
+  }
+
+  /**
+   * Set a cascade permission value (concrete or inheritance marker) at the
+   * conversation level. Concrete values are pushed to the server immediately.
+   * Inheritance markers are saved to AsyncStorage and the resolved concrete
+   * mode is pushed instead.
+   */
+  async setCascadePermission(mode: PermissionCascadeValue): Promise<void> {
+    // Save the user's selection (concrete or marker) per-conversation.
+    await saveConversationPerm(this.conversationId, mode);
+    if (isConcretePerm(mode)) {
+      await this.setPermissionMode(toSdkPermissionMode(mode));
+    } else {
+      // Resolve the effective mode and push that to the server.
+      const resolved = await resolveEffectivePermission(
+        this.conversationId,
+        this.agentId,
+        this.conn.profile.id,
+      );
+      await this.setPermissionMode(toSdkPermissionMode(resolved));
+    }
   }
 
   /** Mirror live device status (permission mode, cwd) into the snapshot. */
@@ -456,6 +609,59 @@ export class ChatSession {
     void session.getDeviceStatus().catch(() => {
       // Best-effort: some transports may not replay status until a turn runs.
     });
+    // Restore the user's saved permission mode for this conversation, or the
+    // app-wide default. Cloud sandboxes start at "standard" every time; this
+    // re-applies the user's choice so it survives across reopens.
+    void this.restorePermissionMode();
+  }
+
+  /**
+   * Read the saved permission mode from AsyncStorage and set it in the snapshot
+   * immediately — before any SDK session exists. This makes the chip show the
+   * right value on conversation open without requiring a send first.
+   */
+  private async restorePermissionModeIntoSnapshot(): Promise<void> {
+    try {
+      const resolved = await resolveEffectivePermission(
+        this.conversationId,
+        this.agentId,
+        this.conn.profile.id,
+      );
+      const mode = toSdkPermissionMode(resolved);
+      this.commit(
+        patch(this.snapshot, {
+          device: {
+            permissionMode: mode,
+            workingDirectory: this.snapshot.device?.workingDirectory ?? null,
+            memoryDirectory: this.snapshot.device?.memoryDirectory ?? null,
+          },
+        }),
+      );
+    } catch {
+      // Best-effort: if AsyncStorage fails the server default ("standard") stands.
+    }
+  }
+
+  /** Re-apply saved per-conversation permission mode, or the cascade default. */
+  private async restorePermissionMode(): Promise<void> {
+    // Set the guard BEFORE the async AsyncStorage read so onDeviceStatus can't
+    // clobber our restored mode while we're waiting for storage.
+    this.permRestoreInFlight = true;
+    setTimeout(() => { this.permRestoreInFlight = false; }, 5000);
+    try {
+      const resolved = await resolveEffectivePermission(
+        this.conversationId,
+        this.agentId,
+        this.conn.profile.id,
+      );
+      // Only push to the server if the resolved mode is a concrete value
+      // (not an inheritance marker — those should have been resolved already).
+      if (isConcretePerm(resolved)) {
+        await this.setPermissionMode(toSdkPermissionMode(resolved));
+      }
+    } catch {
+      // Best-effort: if AsyncStorage fails the server default ("standard") stands.
+    }
   }
 
   /**
@@ -484,9 +690,36 @@ export class ChatSession {
         unresolvable: true,
       }));
     const approvals = [...answerable, ...orphans];
+    // If we're restoring a saved/default permission mode, don't let a stale
+    // server status clobber it — the changeDeviceState call is still in
+    // flight. Once the server confirms our mode, clear the flag.
+    const serverMode = status.permissionMode as PermissionMode;
+    if (this.permRestoreInFlight) {
+      // Keep our restored value until the server echoes it back.
+      const ourMode = this.snapshot.device?.permissionMode;
+      if (ourMode && ourMode === serverMode) {
+        this.permRestoreInFlight = false;
+      }
+      return patch(snapshot, {
+        device: {
+          permissionMode: ourMode ?? serverMode,
+          workingDirectory: status.workingDirectory,
+          memoryDirectory: status.memoryDirectory,
+        },
+        approvals,
+        run:
+          snapshot.run === "aborting"
+            ? "aborting"
+            : approvals.length > 0
+              ? "awaiting_approval"
+              : status.isProcessing
+                ? "running"
+                : "idle",
+      });
+    }
     return patch(snapshot, {
       device: {
-        permissionMode: status.permissionMode as PermissionMode,
+        permissionMode: serverMode,
         workingDirectory: status.workingDirectory,
         // The path the executing harness actually resolved (SDK 0.5.1, #229) —
         // null on older servers that don't report it.
@@ -575,6 +808,7 @@ export class ChatSession {
 
   close(): void {
     this.closed = true;
+    this.stopBackgroundPolling();
     this.accumulator.reset();
     this.localRows = [];
     this.echoOtids.clear();
@@ -755,6 +989,17 @@ export class ChatSession {
    */
   private ingest(message: SDKMessage): void {
     this.settleActivityWaiters();
+    // External run tracking: deltas arriving with no local turn in flight
+    // belong to a run another client started. `result` frames are only
+    // synthesized for locally-sent turns, so completion is detected from the
+    // server's loop_status broadcast (IDLE) in reduce().
+    if (!this.localRunInFlight) {
+      if (message.type === "assistant" || message.type === "reasoning" || message.type === "tool_call" || message.type === "tool_result") {
+        this.externalRunActive = true;
+      } else if (message.type === "error") {
+        if (this.externalRunActive) this.externalRunSawError = true;
+      }
+    }
     if (message.type === "stream_event") {
       this.pendingStream.push(message);
       if (this.flushTimer) return;
@@ -932,6 +1177,19 @@ export class ChatSession {
         // what used to make a freshly-opened chat show a phantom turn, since
         // opening one reports WAITING_ON_INPUT.
         const status = message.status.toUpperCase();
+        // External run completion: loop_status returning to IDLE after we saw
+        // another client's run traffic is the only terminal signal external
+        // runs produce on this session (no `result` frame for them).
+        if (!this.localRunInFlight) {
+          if (!status.startsWith("WAITING") && status !== "IDLE") {
+            this.externalRunActive = true;
+          } else if (status === "IDLE" && this.externalRunActive) {
+            this.externalRunActive = false;
+            const failed = this.externalRunSawError;
+            this.externalRunSawError = false;
+            if (this.onExternalRunCompleted) this.onExternalRunCompleted(!failed);
+          }
+        }
         if (status === "WAITING_ON_APPROVAL") {
           return this.project(patch(snapshot, { run: "awaiting_approval" }));
         }
@@ -949,7 +1207,20 @@ export class ChatSession {
         // only place "Stopped" can be shown.
         const interrupted = !message.success || message.stopReason === "interrupted";
         this.interruptedKey = interrupted ? newestTextKey(this.accumulator.rows()) : null;
+        // Mark this turn's runs as notified so the background poller doesn't
+        // double-fire for the same run.
+        for (const runId of message.runIds ?? []) this.notifiedRunIds.add(runId);
         const idle = this.project(patch(snapshot, { run: "idle" }));
+        // Notification hook: fire the appropriate callback based on whether
+        // the run was started from this app (local) or another client.
+        // The UI checks isScreenVisible + notification mode to decide
+        // whether to post a system notification.
+        if (this.localRunInFlight) {
+          if (this.onTurnCompleted) this.onTurnCompleted(message.success);
+          this.localRunInFlight = false;
+        } else {
+          if (this.onExternalRunCompleted) this.onExternalRunCompleted(message.success);
+        }
         return message.success
           ? idle
           : this.appendError(idle, message.errorDetail ?? message.error ?? "The run failed.");

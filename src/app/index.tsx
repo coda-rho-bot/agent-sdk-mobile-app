@@ -5,15 +5,33 @@
  * Milestone 1 renders the full visual shell; profile storage and the live
  * test-connection flow arrive in milestone 3.
  */
+import type { BottomSheetModal } from "@gorhom/bottom-sheet";
 import { router } from "expo-router";
-import { ScrollView, StyleSheet, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { Alert, ScrollView, StyleSheet, View } from "react-native";
 
+import { Dropdown } from "../components/ui/Dropdown";
 import { Screen } from "../components/ui/Screen";
+import { Sheet } from "../components/ui/Sheet";
 import { StatusDot } from "../components/ui/StatusDot";
 import { Text } from "../components/ui/Text";
 import { Touchable } from "../components/ui/Touchable";
 import { useProfiles } from "../lib/profiles/ProfilesContext";
 import { Bloop } from "../components/ui/Bloop";
+import {
+  NotificationMode,
+  loadAppDefault,
+  saveAppDefault,
+  resetAllAppDownstreamNotifications,
+} from "../lib/notifications";
+import {
+  PermissionCascadeMode,
+  type PermissionCascadeValue,
+  permissionDetail,
+  loadAppPermDefault,
+  saveAppPermDefault,
+  resetAllAppDownstream,
+} from "../lib/permissions";
 import { useTheme } from "../theme/ThemeProvider";
 import { brandMark, radius, space } from "../theme/tokens";
 
@@ -66,9 +84,31 @@ function ModeCard({
 export default function ConnectScreen() {
   const { colors } = useTheme();
   const { profiles, activeProfile, setActive } = useProfiles();
+
+  // App-level settings sheet — app-wide defaults + reset all downstream.
+  const settingsRef = useRef<BottomSheetModal>(null);
+  const [defaultPerm, setDefaultPerm] = useState<PermissionCascadeValue>(PermissionCascadeMode.STANDARD);
+  const [appNotif, setAppNotif] = useState<NotificationMode>(NotificationMode.OFF);
+  useEffect(() => {
+    void loadAppPermDefault().then(setDefaultPerm);
+    void loadAppDefault().then(setAppNotif);
+  }, []);
+
   return (
     <Screen>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <View style={styles.topBar}>
+          <Touchable
+            accessibilityLabel="App settings"
+            accessibilityRole="button"
+            onPress={() => settingsRef.current?.present()}
+            style={styles.gear}
+          >
+            <Text role="title" ink={2}>
+              ⚙
+            </Text>
+          </Touchable>
+        </View>
         <View style={styles.hero}>
           <Logomark color={colors.ink} />
           <Text role="display" style={styles.heroTitle}>
@@ -143,12 +183,108 @@ export default function ConnectScreen() {
           ) : null}
         </View>
       </ScrollView>
+
+      <Sheet ref={settingsRef} title="App defaults" scroll>
+        <Dropdown
+          label="Permission mode"
+          value={defaultPerm}
+          options={[
+            { value: PermissionCascadeMode.STRICT, label: "Strict", detail: "Every tool asks, even reads" },
+            { value: PermissionCascadeMode.STANDARD, label: "Standard", detail: "Asks before risky tools" },
+            { value: PermissionCascadeMode.ACCEPT_EDITS, label: "Accept edits", detail: "File edits are auto-approved" },
+            { value: PermissionCascadeMode.UNRESTRICTED, label: "Unrestricted", detail: "Everything auto-approved", danger: true },
+          ]}
+          onSelect={(mode) => {
+            setDefaultPerm(mode);
+            void saveAppPermDefault(mode);
+          }}
+        />
+        <Text role="sub" ink={3} style={styles.permHint}>
+          App-wide default for permissions. Servers, agents, and conversations inherit this unless overridden.
+        </Text>
+        <Touchable
+          accessibilityRole="button"
+          accessibilityLabel="Reset all downstream permission settings to app default"
+          onPress={() =>
+            Alert.alert(
+              "Reset all permissions?",
+              "Clears all server, agent, and conversation permission overrides. They will inherit from this app default.",
+              [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Reset",
+                  style: "destructive",
+                  onPress: async () => {
+                    await resetAllAppDownstream();
+                    Alert.alert("Done", "All permission overrides cleared.");
+                  },
+                },
+              ],
+            )
+          }
+          style={styles.resetBtn}
+        >
+          <Text role="body" tone="danger">
+            Reset all downstream permissions
+          </Text>
+        </Touchable>
+
+        <View style={styles.sectionDivider} />
+
+        <Dropdown
+          label="Notification default"
+          value={appNotif}
+          options={[
+            { value: NotificationMode.OFF, label: "Off", detail: "No notifications", danger: true },
+            { value: NotificationMode.MOBILE_ONLY, label: "Mobile only", detail: "Runs started from this app" },
+            { value: NotificationMode.ALL_MESSAGES, label: "All messages", detail: "All run completions" },
+          ]}
+          onSelect={(mode) => {
+            setAppNotif(mode);
+            void saveAppDefault(mode);
+          }}
+        />
+        <Text role="sub" ink={3} style={styles.permHint}>
+          App-wide default for notifications. Servers, agents, and conversations inherit this unless overridden.
+        </Text>
+        <Touchable
+          accessibilityRole="button"
+          accessibilityLabel="Reset all downstream notification settings to app default"
+          onPress={() =>
+            Alert.alert(
+              "Reset all notifications?",
+              "Clears all server, agent, and conversation notification overrides. They will inherit from this app default.",
+              [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Reset",
+                  style: "destructive",
+                  onPress: async () => {
+                    await resetAllAppDownstreamNotifications();
+                    Alert.alert("Done", "All notification overrides cleared.");
+                  },
+                },
+              ],
+            )
+          }
+          style={styles.resetBtn}
+        >
+          <Text role="body" tone="danger">
+            Reset all downstream notifications
+          </Text>
+        </Touchable>
+      </Sheet>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
   content: { paddingHorizontal: space.gutter, paddingBottom: space.xxl },
+  topBar: { flexDirection: "row", justifyContent: "flex-end", paddingVertical: space.sm },
+  gear: { paddingHorizontal: space.sm },
+  sectionDivider: { height: StyleSheet.hairlineWidth, marginVertical: space.md, backgroundColor: "transparent" },
+  permHint: { paddingTop: space.md, fontStyle: "italic" },
+  resetBtn: { paddingVertical: space.sm, alignItems: "center" },
   hero: { paddingTop: space.xxl, paddingBottom: space.section, gap: space.md },
   heroTitle: { marginTop: space.sm },
   cards: { gap: space.md },

@@ -11,19 +11,18 @@
 import { LettaAgentClient, createReactNativeWebSocketConstructor } from "@letta-ai/letta-agent-sdk/client";
 import type {
   UpdateConversationOptions,
+  Computer,
   LettaAgent,
   LettaCodeModelEntry,
   LettaConversation,
-  ReasoningEffort,
+  ReasoningEffort as SdkReasoningEffort,
 } from "@letta-ai/letta-agent-sdk/client";
 
 import { CLOUD_DEFAULT_URL, type Profile } from "../profiles/profiles";
 import { OAuthTokenError } from "../auth/oauthTokens";
 
-// Re-exported so UI code imports from the app's data module, but the
-// definition is the SDK's — no drift (previously narrowed to low|medium|high,
-// silently hiding none/minimal/xhigh).
-export type { ReasoningEffort };
+// Re-exported so UI code imports from the app's data module. Definition lives
+// just below (widened with "max" — see the type comment there).
 
 export interface AgentSummary {
   id: string;
@@ -33,8 +32,18 @@ export interface AgentSummary {
   lastActive?: string;
 }
 
+/**
+ * Reasoning effort, widened with "max" — the model catalog ships "max"
+ * variants (claude + gpt-5.6 lines) and the Anthropic model settings accept
+ * it, but the SDK's own union omits it.
+ */
+export type ReasoningEffort = SdkReasoningEffort | "max";
+
 /** Display projection of the SDK's model entry — same fields, same names. */
-export type ModelOption = Pick<LettaCodeModelEntry, "id" | "handle" | "label">;
+export type ModelOption = Pick<LettaCodeModelEntry, "id" | "handle" | "label"> & {
+  /** Catalog default/variant reasoning effort for this entry, if declared. */
+  effort?: ReasoningEffort;
+};
 
 interface Connection {
   profile: Profile;
@@ -160,28 +169,39 @@ export async function deleteAgent(conn: Connection, agentId: string): Promise<vo
   await sdkClient(conn).agents.delete(agentId);
 }
 
-// ── Execution targets ───────────────────────────────────────────────────────
+// ── Computers / Environments ────────────────────────────────────────────────
+
+/** Display projection of the SDK's Computer record. */
+export interface ComputerSummary {
+  /** Stable identifier for the physical device across reconnects. */
+  deviceId: string;
+  /** Human-readable computer name. */
+  name: string;
+  /** Current online connection lease (null when offline). */
+  connectionId: string | null;
+  status: "online" | "offline";
+}
+
+function toComputerSummary(record: Computer): ComputerSummary {
+  return {
+    deviceId: record.deviceId,
+    name: record.name,
+    connectionId: record.connectionId,
+    status: record.status,
+  };
+}
 
 /**
- * Pick where a cloud session should execute. If the account has an
- * environment (a `letta` listener) online right now, route the session there —
- * that's the "chat with the agent on my homeserver" case and avoids spinning
- * a sandbox. Otherwise return undefined and let the SDK manage a sandbox.
+ * List computers registered with this Letta Cloud account. Cloud only —
+ * remote profiles connect to a single app-server directly.
  */
-export async function pickCloudEnvironment(conn: Connection): Promise<{ connectionId: string } | undefined> {
-  if (conn.profile.type !== "cloud") return undefined;
-  try {
-    const body = (await cloudFetch(conn, "/v1/environments")) as {
-      connections?: { id: string; lastSeenAt?: number }[];
-    };
-    const now = Date.now();
-    const online = (body.connections ?? [])
-      .filter((c) => typeof c.lastSeenAt === "number" && now - c.lastSeenAt! < 120_000)
-      .sort((a, b) => (b.lastSeenAt ?? 0) - (a.lastSeenAt ?? 0));
-    return online[0] ? { connectionId: online[0].id } : undefined;
-  } catch {
-    return undefined;
-  }
+export async function listComputers(conn: Connection, opts: { onlineOnly?: boolean } = {}): Promise<ComputerSummary[]> {
+  if (conn.profile.type !== "cloud") return [];
+  const result = await sdkClient(conn).computers.list({
+    limit: 50,
+    ...(opts.onlineOnly ? { onlineOnly: true } : {}),
+  });
+  return result.computers.map(toComputerSummary);
 }
 
 // ── Conversations ───────────────────────────────────────────────────────────
@@ -354,9 +374,87 @@ function modelSettingsFor(model: string, effort?: ReasoningEffort): ModelSetting
       : undefined;
   }
   if (provider === "openai") {
-    return { provider_type: "openai", reasoning: { reasoning_effort: effort } };
+    // The typed SDK field omits "max" but the catalog ships OpenAI "max"
+    // variants and the protocol accepts it — pass it through.
+    return { provider_type: "openai", reasoning: { reasoning_effort: effort as SdkReasoningEffort } };
   }
   return undefined;
+}
+
+/**
+ * Bulk-apply a model to many conversations (settings-sheet "downstream"
+ * application). Sequential on purpose — gentle on rate limits. Conversations
+ * that fail to update are counted, not thrown, so one bad row doesn't abort
+ * the sweep.
+ */
+export async function applyModelToConversations(
+  conn: Connection,
+  conversationIds: string[],
+  model: string,
+): Promise<{ updated: number; failed: number }> {
+  let updated = 0;
+  let failed = 0;
+  for (const id of conversationIds) {
+    try {
+      await updateConversationModel(conn, id, { model });
+      updated++;
+    } catch {
+      failed++;
+    }
+  }
+  return { updated, failed };
+}
+
+// ── Runs ────────────────────────────────────────────────────────────────────
+
+export interface RunSummary {
+  id: string;
+  status: string;
+  completed_at?: string;
+}
+
+function toRunSummary(run: Record<string, unknown>): RunSummary {
+  return {
+    id: run.id as string,
+    status: run.status as string,
+    completed_at: run.completed_at as string | undefined,
+  };
+}
+
+/**
+ * List recent runs for a conversation via REST. Used by the background
+ * poller to detect cross-client (external) run completions while the app
+ * is backgrounded — the cloud relay doesn't fan out stream events for
+ * runs started by other clients (letta-agent-sdk#374).
+ *
+ * Cloud: uses cloudFetch (Bearer auth, CLOUD_DEFAULT_URL).
+ * Remote: converts the ws(s):// profile URL to http(s):// and calls the
+ * app-server's REST surface directly. If the remote server doesn't expose
+ * /v1/runs, the caller catches the error and falls back to stream-based
+ * detection (which works while foregrounded).
+ */
+export async function listConversationRuns(
+  conn: Connection,
+  conversationId: string,
+  opts: { limit?: number } = {},
+): Promise<RunSummary[]> {
+  const limit = opts.limit ?? 5;
+  if (conn.profile.type === "cloud") {
+    const body = await cloudFetch(
+      conn,
+      `/v1/runs?conversation_id=${encodeURIComponent(conversationId)}&limit=${limit}`,
+    );
+    return Array.isArray(body) ? (body as Record<string, unknown>[]).map(toRunSummary) : [];
+  }
+  // Remote: ws(s):// → http(s)://
+  const baseUrl = conn.profile.url.replace(/^ws(s?):/, "http$1:");
+  const url = `${baseUrl}/v1/runs?conversation_id=${encodeURIComponent(conversationId)}&limit=${limit}`;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (conn.secret) headers["Authorization"] = `Bearer ${conn.secret}`;
+  const response = await fetch(url, { headers });
+  if (!response.ok) throw new Error(`Remote API ${response.status} for /v1/runs`);
+  const text = await response.text();
+  return text ? (JSON.parse(text) as Record<string, unknown>[]).map(toRunSummary) : [];
 }
 
 // ── Models ──────────────────────────────────────────────────────────────────
@@ -364,5 +462,14 @@ function modelSettingsFor(model: string, effort?: ReasoningEffort): ModelSetting
 export async function listModels(conn: Connection): Promise<ModelOption[]> {
   // Session-less on every backend since SDK 0.3.1 — no sandbox just to open a picker.
   const result = await sdkClient(conn).models.list();
-  return result.entries.map((e) => ({ id: e.id, handle: e.handle, label: e.label }));
+  const EFFORTS: readonly ReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+  return result.entries.map((e) => {
+    const raw = e.updateArgs?.reasoning_effort;
+    return {
+      id: e.id,
+      handle: e.handle,
+      label: e.label,
+      effort: typeof raw === "string" && (EFFORTS as readonly string[]).includes(raw) ? (raw as ReasoningEffort) : undefined,
+    };
+  });
 }

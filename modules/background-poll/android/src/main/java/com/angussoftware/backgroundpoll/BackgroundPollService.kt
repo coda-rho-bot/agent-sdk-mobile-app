@@ -8,6 +8,11 @@ import android.app.Service
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import androidx.core.app.NotificationCompat
+import androidx.core.app.Person
+import androidx.core.content.pm.ShortcutInfoCompat
+import androidx.core.content.pm.ShortcutManagerCompat
+import androidx.core.graphics.drawable.IconCompat
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
@@ -45,6 +50,8 @@ class BackgroundPollService : Service() {
   private val watched = HashMap<String, ConversationSpec>()
   /** agentId → profile-picture bitmap, fetched once per service lifetime. */
   private val avatarCache = HashMap<String, Bitmap>()
+  /** agentId → messaging Person (avatar + name), built once per service lifetime. */
+  private val personCache = HashMap<String, Person>()
   private var baseUrl: String = ""
   private var token: String = ""
   private var pollStartedAt: Long = 0L
@@ -294,6 +301,73 @@ class BackgroundPollService : Service() {
     }
   }
 
+  /**
+   * The agent as a messaging Person: profile picture when available, else the
+   * system's initial-letter avatar. Cached per service lifetime.
+   */
+  private fun personFor(spec: ConversationSpec): Person {
+    personCache[spec.agentId]?.let { return it }
+    val builder = Person.Builder().setName(spec.title).setKey(spec.agentId)
+    avatarFor(spec)?.let { builder.setIcon(IconCompat.createWithBitmap(it)) }
+    return builder.build().also { personCache[spec.agentId] = it }
+  }
+
+  /**
+   * Conversation channel for the spec: a channel linked (via
+   * setConversationId) to a dynamic shortcut carrying the agent avatar.
+   * This is the Android 11+ "conversation notification" mechanism — Samsung's
+   * shade renders the shortcut's avatar on the collapsed row's left side
+   * (like Google Messages), instead of the app launcher icon. Returns the
+   * channel id to notify on.
+   */
+  private fun ensureConversationChannel(spec: ConversationSpec, avatar: Bitmap?): String {
+    val channelId = "conv-${spec.conversationId.hashCode()}"
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return CONVERSATIONS_CHANNEL_ID
+    val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+    if (nm.getNotificationChannel(channelId) != null) return channelId
+
+    val deepLink = Uri.parse(
+      "agents-chat://chat?conversationId=${spec.conversationId}&agentId=${spec.agentId}&title=${Uri.encode(spec.title)}"
+    )
+    val intent = Intent(Intent.ACTION_VIEW, deepLink).setPackage(packageName)
+      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+    val iconRes = resources.getIdentifier("notif_transparent", "drawable", packageName)
+      .takeIf { it != 0 } ?: applicationInfo.icon
+    val shortcut = ShortcutInfoCompat.Builder(this, spec.conversationId)
+      .setShortLabel(spec.title)
+      .setLongLabel(spec.title)
+      .setCategories(setOf("android.shortcut.conversation"))
+      .setIcon(
+        avatar?.let { IconCompat.createWithBitmap(it) }
+          ?: IconCompat.createWithResource(this, iconRes)
+      )
+      .setIntent(intent)
+      .setLongLived(true)
+      .build()
+    try {
+      ShortcutManagerCompat.pushDynamicShortcut(this, shortcut)
+    } catch (e: Exception) {
+      Log.w(TAG, "shortcut push failed conv=${spec.conversationId.takeLast(8)}: ${e.message}")
+    }
+    val channel = NotificationChannel(channelId, spec.title, NotificationManager.IMPORTANCE_HIGH)
+      .apply {
+        description = "Run completions for ${spec.title}"
+        // parentChannelId = the preexisting "conversations" channel;
+        // conversationId = the shortcut id (links the channel to the shortcut).
+        setConversationId(CONVERSATIONS_CHANNEL_ID, spec.conversationId)
+      }
+    try {
+      nm.createNotificationChannel(channel)
+    } catch (e: Exception) {
+      // Samsung validates ordering strictly (parent + shortcut must have
+      // settled). The shortcut is now pushed — the next notify succeeds. Until
+      // then, fall back to the generic channel so the notification still posts.
+      Log.w(TAG, "conversation channel failed: ${e.message}")
+      return CONVERSATIONS_CHANNEL_ID
+    }
+    return channelId
+  }
+
   private fun postCompletionNotification(spec: ConversationSpec, bodyText: String) {
     ensureChannels()
     val deepLink = Uri.parse(
@@ -305,27 +379,31 @@ class BackgroundPollService : Service() {
       this, spec.conversationId.hashCode(), intent,
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
-    val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      Notification.Builder(this, CONVERSATIONS_CHANNEL_ID)
-    } else {
-      @Suppress("DEPRECATION")
-      Notification.Builder(this).setPriority(Notification.PRIORITY_HIGH)
-    }
+    // Conversation-style notification: Android renders the person's avatar
+    // (profile picture, or initial-letter circle without one) on the LEFT —
+    // same as SMS/WhatsApp rows. The transparent small icon keeps any
+    // leftover app-badge invisible.
+    val avatar = avatarFor(spec)
+    val channelId = ensureConversationChannel(spec, avatar)
+    val person = personFor(spec)
+    // One UI's collapsed row renders the LARGE icon as its left-side image;
+    // without it the row falls back to the small (app) icon. Set both the
+    // person avatar (expanded layout) and the large icon (collapsed row).
+    val builder = NotificationCompat.Builder(this, channelId)
+      .setPriority(NotificationCompat.PRIORITY_HIGH)
     builder
-      .setContentTitle(spec.title)
-      .setContentText(bodyText)
-      .setStyle(Notification.BigTextStyle().bigText(bodyText))
-      // Transparent small icon: the shade row then shows ONLY the agent's
-      // profile picture (large icon) — no app-icon silhouette on the left.
-      // Android requires a small-icon resource; transparent = invisible.
       .setSmallIcon(
         resources.getIdentifier("notif_transparent", "drawable", packageName)
           .takeIf { it != 0 } ?: applicationInfo.icon
       )
       .setContentIntent(pending)
       .setAutoCancel(true)
-    // Agent identity: the profile picture as the large icon (banner + shade).
-    avatarFor(spec)?.let { builder.setLargeIcon(it) }
+      .setShortcutId(spec.conversationId)
+      .setLargeIcon(avatar)
+      .setStyle(
+        NotificationCompat.MessagingStyle(person)
+          .addMessage(bodyText, System.currentTimeMillis(), person)
+      )
     val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
     nm.notify(spec.conversationId.hashCode(), builder.build())
   }

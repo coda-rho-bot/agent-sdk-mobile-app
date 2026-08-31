@@ -28,6 +28,10 @@ export interface AgentSummary {
   id: string;
   name: string;
   model: string;
+  /** Agent description (set in Letta) — shown on the agents list. */
+  description?: string | null;
+  /** Stop reason of the agent's most recent run (e.g. end_turn, requires_approval). */
+  lastStopReason?: string | null;
   /** ISO timestamp of last activity when the server provides one. */
   lastActive?: string;
 }
@@ -130,6 +134,8 @@ function toSummary(record: LettaAgent): AgentSummary {
       record.model ??
       (record.llm_config as { model?: string } | undefined)?.model ??
       "—",
+    description: record.description ?? null,
+    lastStopReason: (record.last_stop_reason as string | null | undefined) ?? null,
     lastActive:
       (record.last_run_completion as string | undefined) ?? record.updated_at ?? undefined,
   };
@@ -143,6 +149,68 @@ export async function listAgents(conn: Connection): Promise<AgentSummary[]> {
     order: "desc",
   });
   return records.map(toSummary);
+}
+
+/**
+ * One unfiltered sweep of recent runs — the in-progress signal for list
+ * screens. Returns which agents and conversations currently have a run
+ * in flight. Cost: a single request regardless of fleet size.
+ */
+export async function fetchRunActivity(conn: Connection): Promise<{
+  runningAgents: Set<string>;
+  runningConversations: Set<string>;
+}> {
+  const runningAgents = new Set<string>();
+  const runningConversations = new Set<string>();
+  try {
+    const body = (await cloudFetch(conn, "/v1/runs?limit=50")) as Array<{
+      status?: string;
+      agent_id?: string | null;
+      conversation_id?: string | null;
+    }>;
+    for (const run of body) {
+      if (run.status !== "running") continue;
+      if (run.agent_id) runningAgents.add(run.agent_id);
+      if (run.conversation_id) runningConversations.add(run.conversation_id);
+    }
+  } catch {
+    // Activity indicators are decoration — an empty set is the graceful fallback.
+  }
+  return { runningAgents, runningConversations };
+}
+
+/**
+ * The agent's latest reply text (newest assistant_message), for list previews.
+ * Returns null when the conversation has no assistant messages.
+ */
+export async function fetchLastAssistantPreview(
+  conn: Connection,
+  conversationId: string,
+): Promise<string | null> {
+  try {
+    const body = (await cloudFetch(
+      conn,
+      `/v1/conversations/${encodeURIComponent(conversationId)}/messages?limit=6`,
+    )) as Array<{ message_type?: string; date?: string; content?: unknown }>;
+    for (const m of body) {
+      // Newest first; first assistant_message wins.
+      if (m.message_type !== "assistant_message") continue;
+      const content = m.content;
+      const text =
+        typeof content === "string"
+          ? content
+          : Array.isArray(content)
+            ? content
+                .map((b) => (b && typeof b === "object" && "text" in b ? String((b as { text?: string }).text ?? "") : ""))
+                .filter((t) => t && !t.startsWith("<system"))
+                .join(" ")
+            : "";
+      return text.trim() || null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export async function createAgent(conn: Connection, options: { name: string; model: string; systemPrompt?: string }): Promise<string> {

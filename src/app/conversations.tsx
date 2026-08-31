@@ -6,7 +6,8 @@
 import type { BottomSheetModal } from "@gorhom/bottom-sheet";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Alert, FlatList, RefreshControl, StyleSheet, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, FlatList, RefreshControl, StyleSheet, TextInput, View } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { Dropdown } from "../components/ui/Dropdown";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -22,7 +23,9 @@ import {
   canDeleteConversations,
   createConversation,
   deleteConversation,
-  listConversations,
+    fetchRunActivity,
+  fetchLastAssistantPreview,
+listConversations,
   listModels,
   renameConversation,
   type ConversationSummary,
@@ -79,8 +82,10 @@ function useActivity(conversationId: string): ConversationActivity | null {
   return useSyncExternalStore(subscribeConversationActivity, read);
 }
 
-function ConversationRow({ conversation, onPress, onLongPress }: {
+function ConversationRow({ conversation, preview, running, onPress, onLongPress }: {
   conversation: ConversationSummary;
+  preview?: string | null;
+  running?: boolean;
   onPress: () => void;
   onLongPress: () => void;
 }) {
@@ -88,6 +93,7 @@ function ConversationRow({ conversation, onPress, onLongPress }: {
   const activity = useActivity(conversation.id);
   const activityLabel =
     activity === "awaiting_approval" ? "needs approval" : activity === "running" ? "running" : null;
+  const inProgress = running || activity === "running";
   return (
     <Touchable
       accessibilityRole="button"
@@ -104,9 +110,18 @@ function ConversationRow({ conversation, onPress, onLongPress }: {
           <Text role="bodyEm" numberOfLines={1}>
             {conversation.title}
           </Text>
-          <Text role="sub" ink={3}>
-            {activityLabel ?? relativeTime(conversation.lastMessageAt)}
-          </Text>
+          {inProgress ? (
+            <View style={styles.runningRow}>
+              <ActivityIndicator size="small" color={colors.accent} />
+              <Text role="sub" ink={2} numberOfLines={1}>
+                {activityLabel ?? "working…"}
+              </Text>
+            </View>
+          ) : (
+            <Text role="sub" ink={2} numberOfLines={2}>
+              {preview ?? relativeTime(conversation.lastMessageAt)}
+            </Text>
+          )}
         </View>
         {activity ? (
           <StatusDot tone={activity === "awaiting_approval" ? "wait" : "run"} />
@@ -125,6 +140,8 @@ export default function ConversationsScreen() {
   const { activeProfile } = useProfiles();
 
   const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
+  const [previews, setPreviews] = useState<Record<string, string>>({});
+  const [runningConvs, setRunningConvs] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -281,6 +298,43 @@ export default function ConversationsScreen() {
       loadedAt.current = Date.now();
       setConversations(page);
       setHasMore(page.length === PAGE_SIZE);
+      // Decoration layers — never block the list on these.
+      void (async () => {
+        // In-progress: one sweep covers every conversation.
+        void fetchRunActivity({ profile: activeProfile, secret }).then((activity) =>
+          setRunningConvs(activity.runningConversations),
+        );
+        // Last-reply previews: cached by conversation id + last activity, so
+        // only conversations with new messages re-fetch.
+        const results = await Promise.all(
+          page.slice(0, 20).map(async (conv) => {
+            const cacheKey = `letta.preview.${conv.id}`;
+            try {
+              const cached = await AsyncStorage.getItem(cacheKey);
+              if (cached) {
+                const parsed = JSON.parse(cached) as { at?: string; text?: string };
+                if (parsed.text && parsed.at === conv.lastMessageAt) return [conv.id, parsed.text] as const;
+              }
+            } catch {
+              // cache miss — fetch fresh
+            }
+            const text = await fetchLastAssistantPreview({ profile: activeProfile, secret }, conv.id);
+            if (text) {
+              try {
+                await AsyncStorage.setItem(cacheKey, JSON.stringify({ at: conv.lastMessageAt, text }));
+              } catch {
+                // ignore
+              }
+            }
+            return [conv.id, text] as const;
+          }),
+        );
+        const map: Record<string, string> = {};
+        for (const [id, text] of results) {
+          if (text) map[id] = text;
+        }
+        setPreviews(map);
+      })();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't load conversations.");
       setConversations((prev) => prev ?? []);
@@ -450,6 +504,8 @@ export default function ConversationsScreen() {
           renderItem={({ item }) => (
             <ConversationRow
               conversation={item}
+              preview={previews[item.id]}
+              running={runningConvs.has(item.id)}
               onPress={() => openChat(item)}
               onLongPress={() => showActions(item)}
             />
@@ -670,6 +726,7 @@ export default function ConversationsScreen() {
 }
 
 const styles = StyleSheet.create({
+  runningRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   list: { paddingBottom: space.xxl, flexGrow: 1 },
   row: { paddingHorizontal: space.gutter },
   rowInner: { flexDirection: "row", alignItems: "center", paddingVertical: 14 },

@@ -7,7 +7,7 @@
 import type { BottomSheetModal } from "@gorhom/bottom-sheet";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, FlatList, RefreshControl, StyleSheet, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, FlatList, RefreshControl, StyleSheet, TextInput, View } from "react-native";
 
 import { Bloop } from "../components/ui/Bloop";
 import { Dropdown } from "../components/ui/Dropdown";
@@ -27,6 +27,7 @@ import {
   createAgent,
   deleteAgent,
   fetchAgentProfilePicture,
+  fetchRunActivity,
   listAgents,
   listConversations,
   listModels,
@@ -81,11 +82,13 @@ function shortModel(model: string): string {
 function AgentRow({
   agent,
   avatarUrl,
+  running,
   onPress,
   onLongPress,
 }: {
   agent: AgentSummary;
   avatarUrl?: string;
+  running?: boolean;
   onPress: () => void;
   onLongPress: () => void;
 }) {
@@ -110,8 +113,11 @@ function AgentRow({
             {agent.name}
           </Text>
           <View style={styles.meta}>
-            <Text role="sub" ink={2} mono numberOfLines={1}>
-              {shortModel(agent.model)}
+            {running ? (
+              <ActivityIndicator size="small" color={colors.accent} />
+            ) : null}
+            <Text role="sub" ink={2} numberOfLines={1}>
+              {agent.description?.trim() || shortModel(agent.model)}
             </Text>
             <Text role="sub" ink={3}>
               · {relativeTime(agent.lastActive)}
@@ -162,6 +168,7 @@ export default function AgentsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState("");
   const [avatars, setAvatars] = useState<Record<string, string>>({});
+  const [runningAgents, setRunningAgents] = useState<Set<string>>(new Set());
 
   // Create/edit sheet state.
   const sheetRef = useRef<BottomSheetModal>(null);
@@ -310,6 +317,10 @@ export default function AgentsScreen() {
       const list = await listAgents({ profile: activeProfile, secret });
       loadedAt.current = Date.now();
       setAgents(list);
+      // In-progress indicators: one sweep covers every agent.
+      void fetchRunActivity({ profile: activeProfile, secret }).then((activity) =>
+        setRunningAgents(activity.runningAgents),
+      );
       // Profile pictures load after the list renders — decoration, never a blocker.
       void (async () => {
         const entries = await Promise.all(
@@ -478,6 +489,7 @@ export default function AgentsScreen() {
             <AgentRow
               agent={item}
               avatarUrl={avatars[item.id]}
+              running={runningAgents.has(item.id)}
               onPress={() => router.push({ pathname: "/conversations", params: { agentId: item.id, agentName: item.name } })}
               onLongPress={() => showActions(item)}
             />

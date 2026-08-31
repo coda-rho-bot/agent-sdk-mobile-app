@@ -315,7 +315,13 @@ class BackgroundPollService : Service() {
       .setContentTitle(spec.title)
       .setContentText(bodyText)
       .setStyle(Notification.BigTextStyle().bigText(bodyText))
-      .setSmallIcon(applicationInfo.icon)
+      // Transparent small icon: the shade row then shows ONLY the agent's
+      // profile picture (large icon) — no app-icon silhouette on the left.
+      // Android requires a small-icon resource; transparent = invisible.
+      .setSmallIcon(
+        resources.getIdentifier("notif_transparent", "drawable", packageName)
+          .takeIf { it != 0 } ?: applicationInfo.icon
+      )
       .setContentIntent(pending)
       .setAutoCancel(true)
     // Agent identity: the profile picture as the large icon (banner + shade).

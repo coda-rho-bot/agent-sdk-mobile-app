@@ -13,7 +13,14 @@
  * all requires the FOREGROUND_SERVICE permission — both easy to lose across
  * prebuild regenerations without this plugin.
  */
-const { withAndroidManifest } = require("expo/config-plugins");
+const { withAndroidManifest, withDangerousMod } = require("expo/config-plugins");
+const fs = require("fs");
+const path = require("path");
+
+// 1x1 fully transparent PNG — used as the notification small icon so the
+// shade row shows only the agent's profile picture (large icon).
+const TRANSPARENT_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
 const SERVICE_CLASS = "com.angussoftware.backgroundpoll.BackgroundPollService";
 
@@ -39,16 +46,35 @@ function ensureService(manifest) {
   }
 }
 
+const withTransparentNotifIcon = (config) =>
+  withDangerousMod(config, [
+    "android",
+    (cfg) => {
+      const resDir = path.join(
+        cfg.modRequest.platformProjectRoot,
+        "app/src/main/res/drawable-nodpi",
+      );
+      fs.mkdirSync(resDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(resDir, "notif_transparent.png"),
+        Buffer.from(TRANSPARENT_PNG_BASE64, "base64"),
+      );
+      return cfg;
+    },
+  ]);
+
 const withBackgroundPoll = (config) =>
-  withAndroidManifest(config, (cfg) => {
+  withTransparentNotifIcon(
+    withAndroidManifest(config, (cfg) => {
     // modResults wraps the manifest in a document root ({ root: { manifest } }
     // in some SDK versions); unwrap to the actual <manifest> node.
     const manifest = cfg.modResults.manifest ?? cfg.modResults;
     ensurePermission(manifest, "android.permission.FOREGROUND_SERVICE");
     ensurePermission(manifest, "android.permission.FOREGROUND_SERVICE_DATA_SYNC");
     ensurePermission(manifest, "android.permission.POST_NOTIFICATIONS");
-    ensureService(manifest);
-    return cfg;
-  });
+      ensureService(manifest);
+      return cfg;
+    }),
+  );
 
 module.exports = withBackgroundPoll;

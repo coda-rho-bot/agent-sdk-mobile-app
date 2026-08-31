@@ -134,6 +134,7 @@ class BackgroundPollService : Service() {
         val id = run.optString("id")
         val convId = run.optString("conversation_id")
         if (id.isEmpty() || convId.isEmpty()) continue
+        if (convId == visibleConversationId) continue // user is viewing it — the UI already shows it live
         val spec = watched[convId] ?: continue // not a watched conversation
         val status = run.optString("status")
         if (status != "completed" && status != "failed" && status != "cancelled") continue
@@ -438,6 +439,9 @@ class BackgroundPollService : Service() {
 
   companion object {
     const val TAG = "BG-POLL"
+    /** The conversation currently on screen — notifications for it are suppressed. */
+    @Volatile
+    var visibleConversationId: String? = null
     const val FGS_NOTIFICATION_ID = 93001
     const val FGS_CHANNEL_ID = "background_polling"
     const val CONVERSATIONS_CHANNEL_ID = "conversations"

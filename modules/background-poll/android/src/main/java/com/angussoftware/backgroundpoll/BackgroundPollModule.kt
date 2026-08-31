@@ -34,6 +34,10 @@ class BackgroundPollModule : Module() {
       context.startForegroundService(intent)
     }
 
+    AsyncFunction("setVisibleConversation") { conversationId: String? ->
+      BackgroundPollService.visibleConversationId = conversationId
+    }
+
     AsyncFunction("stopPolling") {
       val context = appContext.reactContext
       context?.stopService(Intent(context, BackgroundPollService::class.java))

@@ -49,6 +49,7 @@ import { Text } from "../components/ui/Text";
 import { Touchable } from "../components/ui/Touchable";
 import { haptic } from "../lib/haptics";
 import { ChatSession } from "../lib/letta/ChatSession";
+import { setVisibleConversation } from "../../modules/background-poll";
 
 import {
   NotificationMode,
@@ -321,6 +322,13 @@ export default function ChatScreen() {
     },
     [],
   );
+
+  // Report the on-screen conversation so the native poller suppresses
+  // notifications for exactly this one (any other conversation still fires).
+  useEffect(() => {
+    void setVisibleConversation(params.conversationId ?? null);
+    return () => void setVisibleConversation(null);
+  }, [params.conversationId]);
 
   // Load the per-conversation notification setting when the conversation opens.
   // Also request notification permission (no-op if already granted).

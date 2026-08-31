@@ -13,7 +13,7 @@ import * as Notifications from "expo-notifications";
 
 import { ProfilesProvider, useProfiles } from "../lib/profiles/ProfilesContext";
 import { configureNotifications, ensureChannel } from "../lib/notificationPoster";
-import { startBackgroundPollingForProfile, stopBackgroundPolling } from "../lib/backgroundPolling";
+import { startBackgroundPollingForProfile } from "../lib/backgroundPolling";
 import { ThemeProvider, useTheme } from "../theme/ThemeProvider";
 
 /**
@@ -27,18 +27,15 @@ function BackgroundPollingLifecycle() {
   profileRef.current = activeProfile;
 
   useEffect(() => {
-    const sub = AppState.addEventListener("change", (state) => {
-      if (state === "background") {
-        void startBackgroundPollingForProfile(profileRef.current);
-      } else if (state === "active") {
-        void stopBackgroundPolling();
-      }
+    // The poller runs for the app's whole lifetime — foregrounded too — so
+    // "All messages" notifications fire even while the app is open on another
+    // screen. Per-conversation suppression is handled by setVisibleConversation.
+    void startBackgroundPollingForProfile(profileRef.current);
+    const sub = AppState.addEventListener("change", () => {
+      void startBackgroundPollingForProfile(profileRef.current);
     });
-    return () => {
-      sub.remove();
-      void stopBackgroundPolling();
-    };
-  }, []);
+    return () => sub.remove();
+  }, [activeProfile]);
 
   return null;
 }

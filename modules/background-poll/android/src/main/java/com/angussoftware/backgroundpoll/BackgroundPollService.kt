@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
@@ -41,6 +43,8 @@ class BackgroundPollService : Service() {
   private var conversations: List<ConversationSpec> = emptyList()
   /** conversationId → spec, for O(1) sweep filtering. */
   private val watched = HashMap<String, ConversationSpec>()
+  /** agentId → profile-picture bitmap, fetched once per service lifetime. */
+  private val avatarCache = HashMap<String, Bitmap>()
   private var baseUrl: String = ""
   private var token: String = ""
   private var pollStartedAt: Long = 0L
@@ -265,6 +269,31 @@ class BackgroundPollService : Service() {
     }
   }
 
+  /**
+   * The agent's profile picture as a Bitmap, fetched once per agent per
+   * service lifetime and cached. Returns null when the agent has no picture
+   * or anything fails — the notification then uses the default app icon.
+   */
+  private fun avatarFor(spec: ConversationSpec): Bitmap? {
+    avatarCache[spec.agentId]?.let { return it }
+    return try {
+      val body = httpGet("$baseUrl/v1/agents/${spec.agentId}/profile-picture")
+      val dataUrl = JSONObject(body).optString("data_url")
+      val b64 = dataUrl.substringAfter("base64,", "")
+      if (b64.isEmpty()) return null
+      val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+      val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+      if (bmp != null) {
+        avatarCache[spec.agentId] = bmp
+        Log.d(TAG, "avatar loaded for agent ${spec.agentId.takeLast(8)} (${bytes.size}B)")
+      }
+      bmp
+    } catch (e: Exception) {
+      Log.d(TAG, "no avatar for agent ${spec.agentId.takeLast(8)}: ${e.message}")
+      null
+    }
+  }
+
   private fun postCompletionNotification(spec: ConversationSpec, bodyText: String) {
     ensureChannels()
     val deepLink = Uri.parse(
@@ -289,6 +318,8 @@ class BackgroundPollService : Service() {
       .setSmallIcon(applicationInfo.icon)
       .setContentIntent(pending)
       .setAutoCancel(true)
+    // Agent identity: the profile picture as the large icon (banner + shade).
+    avatarFor(spec)?.let { builder.setLargeIcon(it) }
     val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
     nm.notify(spec.conversationId.hashCode(), builder.build())
   }

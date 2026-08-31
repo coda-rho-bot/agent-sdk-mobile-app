@@ -17,6 +17,8 @@ import { Sheet } from "../components/ui/Sheet";
 import { SkeletonList } from "../components/ui/Skeleton";
 import { StatusDot } from "../components/ui/StatusDot";
 import { Text } from "../components/ui/Text";
+import { Image } from "expo-image";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Touchable } from "../components/ui/Touchable";
 import { ModelSheet } from "../components/chat/ModelSheet";
 import { haptic } from "../lib/haptics";
@@ -24,6 +26,7 @@ import {
   applyModelToConversations,
   createAgent,
   deleteAgent,
+  fetchAgentProfilePicture,
   listAgents,
   listConversations,
   listModels,
@@ -31,7 +34,9 @@ import {
   type AgentSummary,
   type ModelOption,
 } from "../lib/letta/api";
-import { getSecret } from "../lib/profiles/profiles";
+import { getSecret,
+  type Profile,
+} from "../lib/profiles/profiles";
 import { useProfiles } from "../lib/profiles/ProfilesContext";
 import { useTheme } from "../theme/ThemeProvider";
 import { radius, space } from "../theme/tokens";
@@ -73,7 +78,17 @@ function shortModel(model: string): string {
   return model.includes("/") ? model.split("/").slice(1).join("/") : model;
 }
 
-function AgentRow({ agent, onPress, onLongPress }: { agent: AgentSummary; onPress: () => void; onLongPress: () => void }) {
+function AgentRow({
+  agent,
+  avatarUrl,
+  onPress,
+  onLongPress,
+}: {
+  agent: AgentSummary;
+  avatarUrl?: string;
+  onPress: () => void;
+  onLongPress: () => void;
+}) {
   const { colors } = useTheme();
   return (
     <Touchable
@@ -85,7 +100,11 @@ function AgentRow({ agent, onPress, onLongPress }: { agent: AgentSummary; onPres
       style={styles.row}
     >
       <View style={styles.rowInner}>
-        <Bloop id={agent.id} />
+        {avatarUrl ? (
+          <Image source={{ uri: avatarUrl }} style={styles.avatar} contentFit="cover" transition={150} />
+        ) : (
+          <Bloop id={agent.id} />
+        )}
         <View style={styles.rowText}>
           <Text role="bodyEm" numberOfLines={1}>
             {agent.name}
@@ -105,6 +124,36 @@ function AgentRow({ agent, onPress, onLongPress }: { agent: AgentSummary; onPres
   );
 }
 
+/**
+ * Profile-picture cache: AsyncStorage key per agent holds the fetched data
+ * URL + the MemFS commit it came from. A changed commit re-fetches; the same
+ * commit keeps the cached image (avoids re-downloading on every visit).
+ */
+const AVATAR_CACHE_PREFIX = "letta.avatar.";
+
+async function loadAgentAvatar(
+  conn: { profile: Profile; secret: string },
+  agentId: string,
+): Promise<string | null> {
+  const fresh = await fetchAgentProfilePicture(conn, agentId);
+  if (!fresh) return null;
+  try {
+    const cached = await AsyncStorage.getItem(AVATAR_CACHE_PREFIX + agentId);
+    if (cached) {
+      const parsed = JSON.parse(cached) as { dataUrl: string; commitSha: string | null };
+      if (parsed.dataUrl && parsed.commitSha === fresh.commitSha) return parsed.dataUrl;
+    }
+  } catch {
+    // Cache read failure is invisible — fall through to the fresh image.
+  }
+  try {
+    await AsyncStorage.setItem(AVATAR_CACHE_PREFIX + agentId, JSON.stringify(fresh));
+  } catch {
+    // Cache write failure is invisible too — the image still renders.
+  }
+  return fresh.dataUrl;
+}
+
 export default function AgentsScreen() {
   const { colors } = useTheme();
   const { activeProfile } = useProfiles();
@@ -112,6 +161,7 @@ export default function AgentsScreen() {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState("");
+  const [avatars, setAvatars] = useState<Record<string, string>>({});
 
   // Create/edit sheet state.
   const sheetRef = useRef<BottomSheetModal>(null);
@@ -260,6 +310,17 @@ export default function AgentsScreen() {
       const list = await listAgents({ profile: activeProfile, secret });
       loadedAt.current = Date.now();
       setAgents(list);
+      // Profile pictures load after the list renders — decoration, never a blocker.
+      void (async () => {
+        const entries = await Promise.all(
+          list.map(async (agent) => [agent.id, await loadAgentAvatar({ profile: activeProfile, secret }, agent.id)] as const),
+        );
+        const next: Record<string, string> = {};
+        for (const [id, url] of entries) {
+          if (url) next[id] = url;
+        }
+        setAvatars(next);
+      })();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't load agents.");
       setAgents((prev) => prev ?? []);
@@ -416,6 +477,7 @@ export default function AgentsScreen() {
           renderItem={({ item }) => (
             <AgentRow
               agent={item}
+              avatarUrl={avatars[item.id]}
               onPress={() => router.push({ pathname: "/conversations", params: { agentId: item.id, agentName: item.name } })}
               onLongPress={() => showActions(item)}
             />
@@ -657,6 +719,7 @@ const styles = StyleSheet.create({
   list: { paddingBottom: space.xxl, flexGrow: 1 },
   row: { paddingHorizontal: space.gutter },
   rowInner: { flexDirection: "row", alignItems: "center", gap: space.md, paddingVertical: 14 },
+  avatar: { width: 40, height: 40, borderRadius: 20 },
   rowText: { flex: 1, gap: 2 },
   meta: { flexDirection: "row", alignItems: "center", gap: space.xs },
   divider: { height: StyleSheet.hairlineWidth, marginLeft: 52 },

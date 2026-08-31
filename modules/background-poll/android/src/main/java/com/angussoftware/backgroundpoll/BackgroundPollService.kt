@@ -125,12 +125,42 @@ class BackgroundPollService : Service() {
       if (isNew && notifiedRunIds.size > 300) notifiedRunIds.clear()
     }
     if (!isNew) return false
-    // Content: the newest user-role initial message at or below the top run.
-    val trigger = findUserTrigger(runs)?.let { truncate(it) }
+    // Content: the agent's final reply for this run (last assistant message
+    // at/after the run's start). Falls back to the triggering user message,
+    // then "Run complete".
+    val reply = findLatestAssistantText(spec.conversationId, top.optString("created_at"))?.let { truncate(it) }
+    val trigger = if (reply != null) null else findUserTrigger(runs)?.let { truncate(it) }
     val fallback = if (status == "completed") "Run complete" else "Run ended with an error"
+    val bodyText = reply ?: trigger ?: fallback
     Log.i(TAG, "turn ended (run $id, $status/$stopReason) conv=${spec.conversationId.takeLast(8)} — posting notification")
-    postCompletionNotification(spec, trigger ?: fallback)
+    postCompletionNotification(spec, bodyText)
     return true
+  }
+
+  /**
+   * The agent's final reply: newest assistant_message dated at/after the
+   * run's start. The messages endpoint returns newest-first; content is a
+   * plain string or a content-block array (API shape varies).
+   */
+  private fun findLatestAssistantText(conversationId: String, runCreatedAtIso: String): String? {
+    return try {
+      val body = httpGet("$baseUrl/v1/conversations/$conversationId/messages?limit=10")
+      val msgs = JSONArray(body)
+      val runStart = parseIso(runCreatedAtIso)
+      for (i in 0 until msgs.length()) {
+        val m = msgs.optJSONObject(i) ?: continue
+        if (m.optString("message_type") != "assistant_message") continue
+        val date = parseIso(m.optString("date"))
+        // Skip replies that predate this run (previous turns).
+        if (runStart != null && date != null && date < runStart) continue
+        val text = extractContentText(m.opt("content")) ?: continue
+        return text
+      }
+      null
+    } catch (e: Exception) {
+      Log.w(TAG, "assistant fetch failed conv=${conversationId.takeLast(8)}: ${e.message}")
+      null
+    }
   }
 
   /** Walk the run list (newest first) for the latest user-role initial message text. */

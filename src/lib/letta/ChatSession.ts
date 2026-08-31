@@ -21,7 +21,7 @@ import { createTranscriptAccumulator } from "@letta-ai/letta-agent-sdk/client";
 
 import { toImageContent, type Attachment } from "./attachments";
 import type { Profile } from "../profiles/profiles";
-import { getConversationModel, isAuthError, listConversationMessages, listConversationRuns, sdkClient } from "./api";
+import { getConversationModel, isAuthError, listConversationMessages, sdkClient } from "./api";
 import { emptyChat, type ApprovalRequest, type ChatSnapshot, type PermissionMode, type ToolStatus, type TranscriptItem } from "./model";
 import { patch } from "./mockSession";
 import { contentToText, formatToolInput } from "./toolText";
@@ -71,11 +71,6 @@ export type ConversationActivity = "running" | "awaiting_approval";
 
 const activityByConversation = new Map<string, ConversationActivity>();
 const activityListeners = new Set<() => void>();
-
-/** Terminal run statuses (Letta runs API): created/running are in-flight. */
-function isTerminalRun(status: string): boolean {
-  return status === "completed" || status === "failed" || status === "cancelled";
-}
 
 function publishActivity(conversationId: string, activity: ConversationActivity | null): void {
   const previous = activityByConversation.get(conversationId) ?? null;
@@ -168,9 +163,6 @@ export class ChatSession {
   // or result reach this session for runs started elsewhere), so while the
   // app is backgrounded with notifications on, the conversation's runs are
   // polled via REST to detect external-run completion.
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
-  private pollStartedAt: number | null = null;
-  private notifiedRunIds = new Set<string>();
   /** Fired when sending a user message fails (e.g. socket closed) — the
    *  bubble is marked "Not sent · Tap to retry". */
   onSendFailed: ((reason: string) => void) | null = null;
@@ -247,56 +239,10 @@ export class ChatSession {
   }
 
   /**
-   * Begin REST polling of this conversation's runs (for cross-client run
-   * completion notifications while backgrounded). No-op while already
-   * polling; stopBackgroundPolling() ends it.
+   * Background run polling lives in the native Kotlin service
+   * (modules/background-poll) — JS timers never fire in backgrounded RN
+   * contexts. See src/lib/backgroundPolling.ts for the root lifecycle.
    */
-  startBackgroundPolling(): void {
-    if (this.pollTimer || this.closed) return;
-    this.pollStartedAt = Date.now();
-    void this.pollExternalRun();
-    this.pollTimer = setInterval(() => this.pollExternalRun(), 20_000);
-  }
-
-  stopBackgroundPolling(): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
-    this.pollStartedAt = null;
-  }
-
-  /** Snapshot of run IDs already notified by the stream (for the background poller). */
-  getNotifiedRunIds(): string[] {
-    return Array.from(this.notifiedRunIds);
-  }
-
-  private pollExternalRun(): void {
-    void (async () => {
-      if (this.closed) {
-        this.stopBackgroundPolling();
-        return;
-      }
-      try {
-        const runs = await listConversationRuns(this.conn, this.conversationId, { limit: 5 });
-        for (const run of runs) {
-          // Only terminal runs (completed/failed/cancelled) are completion
-          // candidates — skip in-flight ones.
-          if (!isTerminalRun(run.status)) continue;
-          const completedAt = run.completed_at ? Date.parse(run.completed_at) : 0;
-          // Only runs finishing after polling began are ones we could have
-          // observed mid-flight — earlier completions predate this session.
-          if (this.pollStartedAt !== null && completedAt < this.pollStartedAt - 5_000) continue;
-          if (this.notifiedRunIds.has(run.id)) continue;
-          this.notifiedRunIds.add(run.id);
-          if (this.notifiedRunIds.size > 100) this.notifiedRunIds.clear();
-          if (this.onExternalRunCompleted) this.onExternalRunCompleted(run.status === "completed");
-        }
-      } catch {
-        // Transient network/API errors — the next tick retries.
-      }
-    })();
-  }
 
   subscribe(listener: SnapshotListener): () => void {
     this.listeners.add(listener);
@@ -808,7 +754,6 @@ export class ChatSession {
 
   close(): void {
     this.closed = true;
-    this.stopBackgroundPolling();
     this.accumulator.reset();
     this.localRows = [];
     this.echoOtids.clear();
@@ -1207,9 +1152,6 @@ export class ChatSession {
         // only place "Stopped" can be shown.
         const interrupted = !message.success || message.stopReason === "interrupted";
         this.interruptedKey = interrupted ? newestTextKey(this.accumulator.rows()) : null;
-        // Mark this turn's runs as notified so the background poller doesn't
-        // double-fire for the same run.
-        for (const runId of message.runIds ?? []) this.notifiedRunIds.add(runId);
         const idle = this.project(patch(snapshot, { run: "idle" }));
         // Notification hook: fire the appropriate callback based on whether
         // the run was started from this app (local) or another client.

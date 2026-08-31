@@ -74,7 +74,11 @@ export async function startBackgroundPollingForProfile(profile: Profile | null):
     console.log(`[BG-POLL] starting for ${specs.length} conversation(s): ${specs.map((s) => s.conversationId.slice(-8)).join(",")}`);
     await nativeStartPolling({
       conversations: specs,
-      baseUrl: profile.type === "remote" && profile.url ? profile.url : "https://api.letta.com",
+      baseUrl:
+        profile.type === "remote" && profile.url
+          ? // Remote profiles store a ws(s):// URL — REST needs http(s)://.
+            profile.url.replace(/^ws:/i, "http:").replace(/^wss:/i, "https:")
+          : "https://api.letta.com",
       token: secret,
       pollStartedAt,
       notifiedRunIds: [],

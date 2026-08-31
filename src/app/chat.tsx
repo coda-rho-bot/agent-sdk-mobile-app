@@ -221,7 +221,6 @@ export default function ChatScreen() {
     });
     return () => {
       sub.remove();
-      sessionRef.current?.stopBackgroundPolling();
     };
   }, []);
 

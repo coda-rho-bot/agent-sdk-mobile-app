@@ -36,7 +36,7 @@ import {
   subscribeConversationActivity,
   type ConversationActivity,
 } from "../lib/letta/ChatSession";
-import { getSecret } from "../lib/profiles/profiles";
+import { getSecret, type Profile } from "../lib/profiles/profiles";
 import { useProfiles } from "../lib/profiles/ProfilesContext";
 import {
   NotificationMode,
@@ -290,22 +290,27 @@ export default function ConversationsScreen() {
   };
 
   const load = useCallback(async () => {
-    if (!activeProfile || !agentId) return;
+    const profile = activeProfile as Profile | null;
+    if (!profile || !agentId) return;
     setError(null);
     try {
-      const secret = (await getSecret(activeProfile.id)) ?? "";
-      const page = await listConversations({ profile: activeProfile, secret }, agentId, { limit: PAGE_SIZE });
+      const secret = (await getSecret(profile.id)) ?? "";
+      const page = await listConversations({ profile, secret }, agentId, { limit: PAGE_SIZE });
       loadedAt.current = Date.now();
       setConversations(page);
       setHasMore(page.length === PAGE_SIZE);
       // Decoration layers — never block the list on these.
-      void (async () => {
-        // In-progress: one sweep covers every conversation.
-        void fetchRunActivity({ profile: activeProfile, secret }).then((activity) =>
+      // In-progress: one sweep covers every conversation. Refreshed on a
+      // cadence while the screen is shown (runs are transient).
+      const refreshActivity = () =>
+        void fetchRunActivity({ profile, secret }).then((activity) =>
           setRunningConvs(activity.runningConversations),
         );
-        // Last-reply previews: cached by conversation id + last activity, so
-        // only conversations with new messages re-fetch.
+      refreshActivity();
+      const activityTimer = setInterval(refreshActivity, 20_000);
+      // Last-reply previews: cached by conversation id + last activity, so
+      // only conversations with new messages re-fetch.
+      void (async () => {
         const results = await Promise.all(
           page.slice(0, 20).map(async (conv) => {
             const cacheKey = `letta.preview.${conv.id}`;
@@ -318,7 +323,7 @@ export default function ConversationsScreen() {
             } catch {
               // cache miss — fetch fresh
             }
-            const text = await fetchLastAssistantPreview({ profile: activeProfile, secret }, conv.id);
+            const text = await fetchLastAssistantPreview({ profile, secret }, conv.id);
             if (text) {
               try {
                 await AsyncStorage.setItem(cacheKey, JSON.stringify({ at: conv.lastMessageAt, text }));
@@ -335,6 +340,7 @@ export default function ConversationsScreen() {
         }
         setPreviews(map);
       })();
+      return () => clearInterval(activityTimer);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't load conversations.");
       setConversations((prev) => prev ?? []);

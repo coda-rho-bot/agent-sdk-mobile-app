@@ -143,6 +143,13 @@ class BackgroundPollService : Service() {
         val completedAt = parseIso(run.optString("completed_at"))
         // Only runs finishing after polling began (5s margin for clock skew).
         if (completedAt != null && completedAt < pollStartedAt - 5_000L) continue
+        // The user is viewing this conversation — the turn already played out
+        // live in front of them. CONSUME the run so it doesn't fire when they
+        // leave the screen (the "queued notification" bug).
+        if (convId == visibleConversationId) {
+          synchronized(notifiedRunIds) { notifiedRunIds.add(id) }
+          continue
+        }
         val isNew: Boolean
         synchronized(notifiedRunIds) {
           isNew = notifiedRunIds.add(id)

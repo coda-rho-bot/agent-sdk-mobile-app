@@ -35,9 +35,7 @@ import {
   type AgentSummary,
   type ModelOption,
 } from "../lib/letta/api";
-import { getSecret,
-  type Profile,
-} from "../lib/profiles/profiles";
+import { getSecret, type Profile } from "../lib/profiles/profiles";
 import { useProfiles } from "../lib/profiles/ProfilesContext";
 import { useTheme } from "../theme/ThemeProvider";
 import { radius, space } from "../theme/tokens";
@@ -116,7 +114,7 @@ function AgentRow({
             {running ? (
               <ActivityIndicator size="small" color={colors.accent} />
             ) : null}
-            <Text role="sub" ink={2} numberOfLines={1}>
+            <Text role="sub" ink={2} numberOfLines={1} style={{ flex: 1 }}>
               {agent.description?.trim() || shortModel(agent.model)}
             </Text>
             <Text role="sub" ink={3}>
@@ -310,21 +308,28 @@ export default function AgentsScreen() {
   };
 
   const load = useCallback(async () => {
-    if (!activeProfile) return;
+    const profile = activeProfile as Profile | null;
+    if (!profile) return;
     setError(null);
     try {
-      const secret = (await getSecret(activeProfile.id)) ?? "";
-      const list = await listAgents({ profile: activeProfile, secret });
+      const secret = (await getSecret(profile.id)) ?? "";
+      const list = await listAgents({ profile, secret });
       loadedAt.current = Date.now();
       setAgents(list);
-      // In-progress indicators: one sweep covers every agent.
-      void fetchRunActivity({ profile: activeProfile, secret }).then((activity) =>
-        setRunningAgents(activity.runningAgents),
-      );
-      // Profile pictures load after the list renders — decoration, never a blocker.
+      // In-progress indicators: one sweep covers every agent. Refreshed on a
+      // cadence while the screen is shown — runs are transient, so a single
+      // sample at entry misses most of them.
+      const refreshActivity = () =>
+        void fetchRunActivity({ profile, secret }).then((activity) =>
+          setRunningAgents(activity.runningAgents),
+        );
+      refreshActivity();
+      const activityTimer = setInterval(refreshActivity, 20_000);
+      // Profile pictures load after the list renders — decoration, never a
+      // blocker. Fetched once per agents-load, cached by MemFS commit.
       void (async () => {
         const entries = await Promise.all(
-          list.map(async (agent) => [agent.id, await loadAgentAvatar({ profile: activeProfile, secret }, agent.id)] as const),
+          list.map(async (agent) => [agent.id, await loadAgentAvatar({ profile, secret }, agent.id)] as const),
         );
         const next: Record<string, string> = {};
         for (const [id, url] of entries) {
@@ -332,6 +337,7 @@ export default function AgentsScreen() {
         }
         setAvatars(next);
       })();
+      return () => clearInterval(activityTimer);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't load agents.");
       setAgents((prev) => prev ?? []);

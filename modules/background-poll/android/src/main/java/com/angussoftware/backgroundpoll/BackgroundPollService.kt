@@ -46,6 +46,8 @@ class BackgroundPollService : Service() {
 
   private var scheduler: ScheduledExecutorService? = null
   private val notifiedRunIds: MutableSet<String> = HashSet()
+  /** Run id -> first-seen wall clock, for runs whose reply text is still lagging. */
+  private val pendingContent = mutableMapOf<String, Long>()
   private var conversations: List<ConversationSpec> = emptyList()
   /** conversationId → spec, for O(1) sweep filtering. */
   private val watched = HashMap<String, ConversationSpec>()
@@ -159,9 +161,20 @@ class BackgroundPollService : Service() {
         if (!isNew) continue
         val reply = findLatestAssistantText(convId, run.optString("created_at"))?.let { truncate(it) }
         val trigger = if (reply != null) null else findUserTrigger(runs, convId)?.let { truncate(it) }
+        val content = reply ?: trigger
+        if (content == null) {
+          // The messages endpoint lags writes: the reply is often not visible
+          // yet when the sweep fires seconds after turn end. Defer — retry on
+          // the next sweeps before falling back to the generic text.
+          val first = pendingContent[id] ?: System.currentTimeMillis().also { pendingContent[id] = it }
+          if (System.currentTimeMillis() - first < CONTENT_WAIT_MS && notifications < 3) continue
+          pendingContent.remove(id)
+        } else {
+          pendingContent.remove(id)
+        }
         val fallback = if (status == "completed") "Run complete" else "Run ended with an error"
         Log.i(TAG, "turn ended (run ${id.takeLast(8)}, $status/$stopReason) conv=${convId.takeLast(8)} — posting notification")
-        postCompletionNotification(spec, reply ?: trigger ?: fallback)
+        postCompletionNotification(spec, content ?: fallback)
         notifications++
         if (notifications >= 3) break // don't storm on catch-up sweeps
       }
@@ -483,6 +496,8 @@ class BackgroundPollService : Service() {
 
   companion object {
     const val TAG = "BG-POLL"
+    /** How long a completed run may wait for lagging reply text before the generic fallback posts. */
+    const val CONTENT_WAIT_MS = 30_000L
     /** The conversation currently on screen — notifications for it are suppressed. */
     @Volatile
     var visibleConversationId: String? = null

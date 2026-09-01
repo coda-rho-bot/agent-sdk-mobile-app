@@ -1,3 +1,6 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+const NOTIF_PERM_ASKED_KEY = "letta.notif-perm-asked";
+
 /**
  * NotificationPoster — platform bridge for posting local notifications.
  * Adapted from the KMP client's NotificationPoster (expect/actual pattern),
@@ -32,10 +35,19 @@ export async function ensureChannel(): Promise<void> {
   }
 }
 
-/** Request notification permission. Returns true if granted. */
+/**
+ * Request notification permission — at most ONCE per install. Android 13+
+ * requires the runtime ask before any notification shows, but re-asking on
+ * every conversation open after a denial is nagging, not prompting: the OS
+ * itself permanently denies after the user's second refusal, so a repeated
+ * request can never succeed and only erodes trust.
+ */
 export async function requestNotificationPermission(): Promise<boolean> {
   const { status: existing } = await Notifications.getPermissionsAsync();
   if (existing === "granted") return true;
+  const asked = await AsyncStorage.getItem(NOTIF_PERM_ASKED_KEY);
+  if (asked) return false;
+  await AsyncStorage.setItem(NOTIF_PERM_ASKED_KEY, "1");
   const { status } = await Notifications.requestPermissionsAsync();
   return status === "granted";
 }

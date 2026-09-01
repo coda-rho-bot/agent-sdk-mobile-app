@@ -325,9 +325,18 @@ export default function ChatScreen() {
 
   // Report the on-screen conversation so the native poller suppresses
   // notifications for exactly this one (any other conversation still fires).
+  // Suppression is FOREGROUND-only: backgrounded the screen stays mounted but
+  // notifications must flow again (a mounted-but-hidden screen is not
+  // "viewing" — the queued-then-fired-on-exit bug in reverse).
   useEffect(() => {
     void setVisibleConversation(params.conversationId ?? null);
-    return () => void setVisibleConversation(null);
+    const sub = AppState.addEventListener("change", (state) => {
+      void setVisibleConversation(state === "active" ? (params.conversationId ?? null) : null);
+    });
+    return () => {
+      sub.remove();
+      void setVisibleConversation(null);
+    };
   }, [params.conversationId]);
 
   // Load the per-conversation notification setting when the conversation opens.

@@ -689,7 +689,7 @@ export class ChatSession {
   }
 
   /** Fetch newest page, apply rows newer than lastTailDate. True when rows landed. */
-  private async applyTailMessages(runDoneAt = 0): Promise<boolean> {
+  private async applyTailMessages(): Promise<boolean> {
     const page = await this.fetchHistoryPage();
     // listConversationMessages returns the page OLDEST-FIRST (it reverses
     // internally) — apply in that order directly.

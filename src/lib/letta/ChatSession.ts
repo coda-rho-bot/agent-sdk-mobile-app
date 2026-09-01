@@ -158,6 +158,15 @@ export class ChatSession {
    *  external completion is tracked via loop_status transitions instead. */
   private externalRunActive = false;
   private externalRunSawError = false;
+  /**
+   * While an external run is active, the transcript reconciles over REST on a
+   * cadence: the relay does not fan out other clients' events (no deltas,
+   * loop_status only), so without this a run started on the desktop never
+   * streams into an open mobile chat. rebase() is safe mid-run (keyed rows),
+   * and the same loop unwedges the reopen-mid-run case where the fresh
+   * session's stream queues behind the busy run and delivers nothing.
+   */
+  private reconcileTimer: ReturnType<typeof setInterval> | null = null;
   // --- Background external-run polling ---
   // The relay does not fan out cross-client events (no deltas, loop_status,
   // or result reach this session for runs started elsewhere), so while the
@@ -559,7 +568,14 @@ export class ChatSession {
 
   /** Mirror live device status (permission mode, cwd) into the snapshot. */
   private watchDeviceStatus(session: LettaCodeSession): void {
-    session.onDeviceStatus((status) => this.commit(this.applyDeviceStatus(this.snapshot, status)));
+    session.onDeviceStatus((status) => {
+      this.commit(this.applyDeviceStatus(this.snapshot, status));
+      // Reopen-mid-run: a fresh session's stream can wedge behind the busy
+      // run (second-subscriber contention) — if the device says a run is
+      // processing and we didn't start it, reconcile over REST until idle.
+      if (!this.localRunInFlight && status.isProcessing) this.startExternalReconcile();
+      if (!status.isProcessing && !this.externalRunActive) this.stopExternalReconcile();
+    });
     void session.getDeviceStatus().catch(() => {
       // Best-effort: some transports may not replay status until a turn runs.
     });
@@ -624,6 +640,21 @@ export class ChatSession {
    * Without this a resume can leave the UI stuck ("Running" forever, stop
    * button frozen) after the run it remembers has long since finished.
    */
+  /** Begin REST reconciliation while a run we don't own is in flight. */
+  private startExternalReconcile(): void {
+    if (this.reconcileTimer || this.closed) return;
+    this.reconcileTimer = setInterval(() => {
+      if (this.closed || this.localRunInFlight) return;
+      void this.hydrate();
+    }, 3_000);
+  }
+
+  private stopExternalReconcile(): void {
+    if (!this.reconcileTimer) return;
+    clearInterval(this.reconcileTimer);
+    this.reconcileTimer = null;
+  }
+
   private applyDeviceStatus(snapshot: ChatSnapshot, status: SessionDeviceStatus): ChatSnapshot {
     const pending = status.pendingControlRequests ?? [];
     // Approvals we still hold a resolver for stay as they are — those cards can
@@ -762,6 +793,7 @@ export class ChatSession {
 
   close(): void {
     this.closed = true;
+    this.stopExternalReconcile();
     this.accumulator.reset();
     this.localRows = [];
     this.echoOtids.clear();
@@ -949,6 +981,7 @@ export class ChatSession {
     if (!this.localRunInFlight) {
       if (message.type === "assistant" || message.type === "reasoning" || message.type === "tool_call" || message.type === "tool_result") {
         this.externalRunActive = true;
+        this.startExternalReconcile();
       } else if (message.type === "error") {
         if (this.externalRunActive) this.externalRunSawError = true;
       }
@@ -1136,8 +1169,10 @@ export class ChatSession {
         if (!this.localRunInFlight) {
           if (!status.startsWith("WAITING") && status !== "IDLE") {
             this.externalRunActive = true;
+            this.startExternalReconcile();
           } else if (status === "IDLE" && this.externalRunActive) {
             this.externalRunActive = false;
+            this.stopExternalReconcile();
             const failed = this.externalRunSawError;
             this.externalRunSawError = false;
             if (this.onExternalRunCompleted) this.onExternalRunCompleted(!failed);

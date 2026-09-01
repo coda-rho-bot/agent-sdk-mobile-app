@@ -344,6 +344,14 @@ export class ChatSession {
     // and link itself to its tool row.
     context?: CanUseToolContext,
   ): Promise<{ behavior: "allow"; updatedPermissions?: unknown[] } | { behavior: "deny"; message: string }> {
+    // Approvals from OTHER clients' runs auto-allow: this device's prompt
+    // must not gate a run it didn't start — the initiating client's own
+    // permission mode governs its runs. Without this, an open app on the
+    // conversation hijacks every other client's tool calls into a phone
+    // approval prompt (and an unattended prompt denies them on timeout).
+    if (!this.localRunInFlight) {
+      return Promise.resolve({ behavior: "allow" as const });
+    }
     const requestId = context?.requestId ?? this.id("approval");
     const request: ApprovalRequest = {
       requestId,

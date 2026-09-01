@@ -22,6 +22,7 @@ import { createTranscriptAccumulator } from "@letta-ai/letta-agent-sdk/client";
 import { toImageContent, type Attachment } from "./attachments";
 import type { Profile } from "../profiles/profiles";
 import { getConversationModel, isAuthError, listConversationMessages, listConversationRuns, sdkClient } from "./api";
+import { ExternalTranscriptStore } from "./ExternalTranscriptStore";
 import { emptyChat, type ApprovalRequest, type ChatSnapshot, type PermissionMode, type ToolStatus, type TranscriptItem } from "./model";
 import { patch } from "./mockSession";
 import { contentToText, formatToolInput } from "./toolText";
@@ -118,7 +119,7 @@ export class ChatSession {
    * created — so it renders where it happened instead of floating to the end
    * once the reply streams in.
    */
-  private localRows: { anchor: number; item: TranscriptItem }[] = [];
+  private localRows: { afterDate: string | null; item: TranscriptItem }[] = [];
   /** otids of echoes still awaiting their persisted counterpart. */
   private echoOtids = new Set<string>();
   /** Reasoning think time, keyed by accumulator row key. */
@@ -177,6 +178,21 @@ export class ChatSession {
   private lastTailDate: string | null = null;
   /** Newest terminal run id seen by the tail sweep — null until first sweep. */
   private lastSeenRunId: string | null = null;
+  /**
+   * Date-ordered store of external-run content (see ExternalTranscriptStore).
+   * Order is a property of message dates, not fetch arrival — the accumulator
+   * keeps only live local-stream reconciliation.
+   */
+  private externalStore = new ExternalTranscriptStore();
+  /**
+   * Row keys created by the LOCAL stream since the last hydrate — the only
+   * accumulator rows that may render as "live" in the projection. Rebased
+   * history rows are excluded by construction: external content renders from
+   * the date-ordered store, and rows whose server identity never matches a
+   * REST message id would otherwise leak into the live tail forever (the
+   * sticky "ran N tools" group).
+   */
+  private liveStreamKeys = new Set<string>();
   /**
    * Last time the LOCAL stream delivered anything. A send whose run executes
    * on ANOTHER listener (the conversation's bound harness) streams nothing
@@ -706,24 +722,32 @@ export class ChatSession {
   private async applyTailMessages(): Promise<boolean> {
     const page = await this.fetchHistoryPage();
     // listConversationMessages returns the page OLDEST-FIRST (it reverses
-    // internally) — apply in that order directly.
+    // internally). External content upserts into the date-ordered store —
+    // display order comes from message dates, never fetch arrival. A
+    // persisted user message matching a live echo is skipped: the echo
+    // already shows that text at its correct position; fresh opens rebuild
+    // from the full page anyway.
     const messages = page.messages as Array<{ date?: string }>;
     if (!messages.length) return false;
-    const acc = this.accumulator as unknown as { applyHistoryMessage(m: unknown): unknown };
     let newest = this.lastTailDate ?? "";
-    let changed = false;
-    for (const m of messages) {
+    const fresh = messages.filter((m) => {
       const d = m.date ?? "";
-      if (!d || d <= newest) continue;
-      acc.applyHistoryMessage(m);
-      changed = true;
-      newest = d;
-    }
-    if (changed) {
-      this.lastTailDate = newest;
-      this.commit(this.project(this.snapshot));
-    }
-    return changed;
+      return d > newest;
+    });
+    const applicable = fresh.filter((m) => {
+      const otid = (m as { otid?: string }).otid;
+      return !(
+        (m as { message_type?: string }).message_type === "user_message" &&
+        otid !== undefined &&
+        this.echoOtids.has(otid)
+      );
+    });
+    const chN = this.externalStore.upsert(applicable as never);
+    const changed = chN > 0;
+    const newestDate = fresh.length ? (fresh[fresh.length - 1]!.date ?? "") : "";
+    if (newestDate > (this.lastTailDate ?? "")) this.lastTailDate = newestDate;
+    if (changed || fresh.length > 0) this.commit(this.project(this.snapshot));
+    return changed || fresh.length > 0;
   }
 
   /** Begin REST reconciliation while a run we don't own is in flight. */
@@ -965,6 +989,12 @@ export class ChatSession {
       // replay thresholds the page proves. Appending would double the transcript
       // on every foreground resume, which is exactly what it used to do.
       this.accumulator.rebase({ messages: page.messages as never }, { order: "asc" });
+      // The external store renders history; the accumulator's rebase stays
+      // for local-stream replay bookkeeping (aliases, thresholds).
+      const upN = this.externalStore.upsert(page.messages as never);
+      // History ownership transfers to the store at every hydrate: only
+      // stream rows arriving AFTER this point render from the accumulator.
+      this.liveStreamKeys.clear();
       // Seed the tail high-water mark: listConversationMessages returns the
       // page OLDEST-FIRST, so the LAST message carries the newest date.
       {
@@ -1160,30 +1190,50 @@ export class ChatSession {
       thinkSeconds: this.thinkSeconds,
       toolDurationMs: this.toolDurationMs,
     };
-    const items = projectRows(rows, state);
+    // External content renders from the date-ordered store. Accumulator rows
+    // the store already covers (rebased history, keyed by server uuid) are
+    // dropped from the live projection — only genuinely-live stream rows
+    // (a local run in flight) render from the accumulator.
+    const externalEntries = this.externalStore.itemsWithDatesRev();
+    const liveItems = projectRows(rows, state).filter((it) => this.liveStreamKeys.has(it.id));
 
-    // An echo retires the moment the accumulator reports the persisted message
-    // under the same otid — identity, not a guess about matching text.
-    const seenOtids = new Set(rows.map((row) => row.otid).filter(Boolean) as string[]);
+    // An echo retires the moment the store holds the persisted message under
+    // the same otid — identity, not a guess about matching text.
+    const storeUserOtids = this.externalStore.userOtids();
     this.localRows = this.localRows.filter(
-      ({ item }) => !(item.kind === "user" && this.echoOtids.has(item.id) && seenOtids.has(item.id)),
+      ({ item }) => !(item.kind === "user" && this.echoOtids.has(item.id) && storeUserOtids.has(item.id)),
     );
 
-    const transcript: TranscriptItem[] = [];
-    let placed = 0;
-    for (let i = 0; i <= items.length; i++) {
-      for (const { anchor, item } of this.localRows) {
-        if (anchor === i) transcript.push(item);
+    // Merge by date: store records are the backbone; each echo slots in after
+    // the records that existed when it was sent (its afterDate stamp) and
+    // before anything newer. An echo sent before the store had any records
+    // (afterDate null — fast send during hydration) belongs at the NEWEST
+    // edge: null sorts first lexicographically, so undated echoes are placed
+    // explicitly after all external entries. Assembled OLDEST-FIRST; chat.tsx
+    // reverses for the inverted FlatList.
+    const oldestFirst: TranscriptItem[] = [];
+    const dated = this.localRows.filter((e) => e.afterDate !== null);
+    const undated = this.localRows.filter((e) => e.afterDate === null);
+    dated.sort((a, b) => (a.afterDate ?? "").localeCompare(b.afterDate ?? ""));
+    let echoIdx = 0;
+    for (const entry of externalEntries) {
+      while (echoIdx < dated.length && (dated[echoIdx]!.afterDate ?? "") < entry.date) {
+        oldestFirst.push(dated[echoIdx]!.item);
+        echoIdx++;
       }
-      if (i < items.length) transcript.push(items[i]!);
-      placed = i;
+      oldestFirst.push(entry.item);
     }
-    // Anchors past the current row count (rows the accumulator later dropped)
-    // still belong at the end rather than disappearing.
-    for (const { anchor, item } of this.localRows) {
-      if (anchor > placed) transcript.push(item);
+    while (echoIdx < dated.length) {
+      oldestFirst.push(dated[echoIdx]!.item);
+      echoIdx++;
     }
-    return patch(snapshot, { transcript });
+    for (const e of undated) oldestFirst.push(e.item);
+    // Live local-run rows are the newest content — after everything. The
+    // transcript ships OLDEST-FIRST: chat.tsx's groupToolRuns().reverse()
+    // produces the newest-first array the inverted FlatList renders.
+    oldestFirst.push(...liveItems);
+
+    return patch(snapshot, { transcript: oldestFirst });
   }
 
   /**
@@ -1225,13 +1275,21 @@ export class ChatSession {
 
   /** Feed a message to the accumulator, then rebuild the transcript from it. */
   private absorb(snapshot: ChatSnapshot, message: SDKMessage): ChatSnapshot {
+    const before = new Set(this.accumulator.rows().map((r) => r.key));
     this.accumulator.apply(message);
+    for (const row of this.accumulator.rows()) {
+      if (!before.has(row.key)) this.liveStreamKeys.add(row.key);
+    }
     return this.project(snapshot);
   }
 
-  /** Add an app-only row (echo, error) anchored at the current live edge. */
+  /**
+   * Add an app-only row (echo, error) positioned after the newest external
+   * record at creation time — date-ordered placement, no row-count anchors
+   * (anchors went stale whenever rows inserted past them).
+   */
   private appendLocal(snapshot: ChatSnapshot, item: TranscriptItem): ChatSnapshot {
-    this.localRows = [...this.localRows, { anchor: this.accumulator.rows().length, item }];
+    this.localRows = [...this.localRows, { afterDate: this.externalStore.maxDate(), item }];
     return this.project(snapshot);
   }
 

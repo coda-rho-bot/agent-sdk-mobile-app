@@ -450,9 +450,15 @@ class BackgroundPollService : Service() {
     val builder = NotificationCompat.Builder(this, channelId)
       .setPriority(NotificationCompat.PRIORITY_HIGH)
     builder
+      // Status-bar small icon: must be a drawable resource. The launcher
+      // foreground glyph reads on both dark and light bars; the fully
+      // transparent notif_transparent rendered as blank space.
       .setSmallIcon(
-        resources.getIdentifier("notif_transparent", "drawable", packageName)
-          .takeIf { it != 0 } ?: applicationInfo.icon
+        resources.getIdentifier("ic_launcher_foreground", "drawable", packageName)
+          .takeIf { it != 0 }
+          ?: resources.getIdentifier("notif_transparent", "drawable", packageName)
+            .takeIf { it != 0 }
+          ?: applicationInfo.icon
       )
       .setContentIntent(pending)
       .setAutoCancel(true)

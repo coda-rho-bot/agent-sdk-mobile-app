@@ -69,6 +69,8 @@ import { useTheme } from "../theme/ThemeProvider";
 import { Dropdown } from "../components/ui/Dropdown";
 import { NotificationMode, labelFor, loadAppDefault, loadConversationSetting, resolveMode, saveConversationSetting } from "../lib/notifications";
 import { configureNotifications, postConversationNotification, requestNotificationPermission } from "../lib/notificationPoster";
+import { setVisibleConversation } from "../../modules/background-poll";
+import { isNativelyWatched } from "../lib/backgroundPolling";
 import { motion, radius, space } from "../theme/tokens";
 
 // Memoized so a streaming flush only re-renders the row whose item changed:
@@ -140,6 +142,20 @@ export default function ChatScreen() {
   // Collapsed tool runs the reader has opened (see lib/letta/grouping).
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set());
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // Report the on-screen conversation so the native poller suppresses
+  // notifications for exactly this one (any other conversation still fires).
+  // Suppression is FOREGROUND-only: backgrounded, notifications must flow.
+  useEffect(() => {
+    void setVisibleConversation(params.conversationId ?? null);
+    const sub = AppState.addEventListener("change", (state) => {
+      void setVisibleConversation(state === "active" ? (params.conversationId ?? null) : null);
+    });
+    return () => {
+      sub.remove();
+      void setVisibleConversation(null);
+    };
+  }, [params.conversationId]);
+
   // Load the per-conversation notification setting when the conversation opens.
   // Also request notification permission once per install (no-op if granted).
   useEffect(() => {
@@ -186,7 +202,9 @@ export default function ChatScreen() {
       if (mode === NotificationMode.OFF) return;
       // MOBILE_ONLY: only notify for runs started from this app.
       if (mode === NotificationMode.MOBILE_ONLY && isExternal) return;
-      // ALL_MESSAGES: notify for all runs.
+      // ALL_MESSAGES: the native poller owns these — its notification is the
+      // rich one; deferring here prevents doubles.
+      if (mode === NotificationMode.ALL_MESSAGES && isNativelyWatched(conversationId)) return;
       await configureNotifications();
       await postConversationNotification(
         conversationId,

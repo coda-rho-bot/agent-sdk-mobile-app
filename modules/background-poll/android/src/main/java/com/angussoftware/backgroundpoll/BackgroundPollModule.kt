@@ -35,7 +35,7 @@ class BackgroundPollModule : Module() {
     }
 
     AsyncFunction("setVisibleConversation") { conversationId: String? ->
-      BackgroundPollService.visibleConversationId = conversationId
+      BackgroundPollService.reportVisibleConversation(conversationId)
     }
 
     AsyncFunction("stopPolling") {

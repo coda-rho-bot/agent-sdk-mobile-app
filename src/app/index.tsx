@@ -17,6 +17,7 @@ import { StatusDot } from "../components/ui/StatusDot";
 import { Text } from "../components/ui/Text";
 import { Touchable } from "../components/ui/Touchable";
 import { useProfiles } from "../lib/profiles/ProfilesContext";
+import { loadPinned, PINNED_PROFILES_KEY, togglePinned } from "../lib/favorites";
 import { Bloop } from "../components/ui/Bloop";
 import {
   NotificationMode,
@@ -83,6 +84,11 @@ function ModeCard({
 
 export default function ConnectScreen() {
   const { colors } = useTheme();
+  const [pinnedProfiles, setPinnedProfiles] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    void loadPinned(PINNED_PROFILES_KEY).then(setPinnedProfiles);
+  }, []);
+
   const { profiles, activeProfile, setActive } = useProfiles();
 
   // App-level settings sheet — app-wide defaults + reset all downstream.
@@ -143,7 +149,7 @@ export default function ConnectScreen() {
               Connections you save appear here.
             </Text>
           ) : (
-            profiles.map((profile) => (
+            [...profiles].sort((a, b) => Number(pinnedProfiles.has(b.id)) - Number(pinnedProfiles.has(a.id))).map((profile) => (
               <Touchable
                 key={profile.id}
                 accessibilityRole="button"
@@ -169,6 +175,17 @@ export default function ConnectScreen() {
                       {activeProfile?.id === profile.id ? " · active" : ""}
                     </Text>
                   </View>
+                  <Touchable
+                    accessibilityRole="button"
+                    accessibilityLabel={pinnedProfiles.has(profile.id) ? `Unpin ${profile.name}` : `Pin ${profile.name} to top`}
+                    onPress={() => void togglePinned(PINNED_PROFILES_KEY, profile.id).then(setPinnedProfiles)}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    style={styles.pinTouch}
+                  >
+                    <Text role="bodyEm" ink={pinnedProfiles.has(profile.id) ? 1 : 3}>
+                      {pinnedProfiles.has(profile.id) ? "★" : "☆"}
+                    </Text>
+                  </Touchable>
                   <Text role="title" ink={3}>
                     ›
                   </Text>
@@ -279,6 +296,7 @@ export default function ConnectScreen() {
 }
 
 const styles = StyleSheet.create({
+  pinTouch: { paddingHorizontal: 6 },
   content: { paddingHorizontal: space.gutter, paddingBottom: space.xxl },
   topBar: { flexDirection: "row", justifyContent: "flex-end", paddingVertical: space.sm },
   gear: { paddingHorizontal: space.sm },

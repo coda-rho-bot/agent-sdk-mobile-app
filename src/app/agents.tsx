@@ -22,6 +22,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Touchable } from "../components/ui/Touchable";
 import { ModelSheet } from "../components/chat/ModelSheet";
 import { haptic } from "../lib/haptics";
+import { loadPinned, pinnedAgentsKey, togglePinned } from "../lib/favorites";
 import {
   applyModelToConversations,
   createAgent,
@@ -81,12 +82,14 @@ function AgentRow({
   agent,
   avatarUrl,
   running,
+  pinned,
   onPress,
   onLongPress,
 }: {
   agent: AgentSummary;
   avatarUrl?: string;
   running?: boolean;
+  pinned?: boolean;
   onPress: () => void;
   onLongPress: () => void;
 }) {
@@ -108,6 +111,7 @@ function AgentRow({
         )}
         <View style={styles.rowText}>
           <Text role="bodyEm" numberOfLines={1}>
+            {pinned ? "★ " : ""}
             {agent.name}
           </Text>
           <View style={styles.meta}>
@@ -183,6 +187,11 @@ export default function AgentsScreen() {
   const [search, setSearch] = useState("");
   const [avatars, setAvatars] = useState<Record<string, string>>({});
   const [runningAgents, setRunningAgents] = useState<Set<string>>(new Set());
+  const [pinned, setPinned] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (!activeProfile) return;
+    void loadPinned(pinnedAgentsKey(activeProfile.id)).then(setPinned);
+  }, [activeProfile]);
 
   // Create/edit sheet state.
   const sheetRef = useRef<BottomSheetModal>(null);
@@ -442,14 +451,23 @@ export default function AgentsScreen() {
   };
 
   const showActions = (agent: AgentSummary) => {
+    const key = activeProfile ? pinnedAgentsKey(activeProfile.id) : null;
     Alert.alert(agent.name, undefined, [
+      ...(key
+        ? [{
+            text: pinned.has(agent.id) ? "Unpin" : "Pin to top",
+            onPress: () => void togglePinned(key, agent.id).then(setPinned),
+          }]
+        : []),
       { text: "Rename", onPress: () => openEdit(agent) },
       { text: "Delete", style: "destructive", onPress: () => confirmDelete(agent) },
       { text: "Cancel", style: "cancel" },
     ]);
   };
 
-  const filtered = (agents ?? []).filter((a) => a.name.toLowerCase().includes(search.toLowerCase()));
+  const filtered = (agents ?? [])
+    .filter((a) => a.name.toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => Number(pinned.has(b.id)) - Number(pinned.has(a.id)));
   const canSubmit = editing ? draftName.trim().length > 0 : draftModel !== null;
 
   return (
@@ -512,6 +530,7 @@ export default function AgentsScreen() {
               agent={item}
               avatarUrl={avatars[item.id]}
               running={runningAgents.has(item.id)}
+              pinned={pinned.has(item.id)}
               onPress={() => router.push({ pathname: "/conversations", params: { agentId: item.id, agentName: item.name } })}
               onLongPress={() => showActions(item)}
             />

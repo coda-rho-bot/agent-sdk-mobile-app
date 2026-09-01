@@ -8,6 +8,7 @@ import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, Alert, FlatList, RefreshControl, StyleSheet, TextInput, View } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { loadPinned, pinnedConversationsKey, togglePinned } from "../lib/favorites";
 
 import { Dropdown } from "../components/ui/Dropdown";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -82,10 +83,11 @@ function useActivity(conversationId: string): ConversationActivity | null {
   return useSyncExternalStore(subscribeConversationActivity, read);
 }
 
-function ConversationRow({ conversation, preview, running, onPress, onLongPress }: {
+function ConversationRow({ conversation, preview, running, pinned, onPress, onLongPress }: {
   conversation: ConversationSummary;
   preview?: string | null;
   running?: boolean;
+  pinned?: boolean;
   onPress: () => void;
   onLongPress: () => void;
 }) {
@@ -108,6 +110,7 @@ function ConversationRow({ conversation, preview, running, onPress, onLongPress 
       <View style={styles.rowInner}>
         <View style={styles.rowText}>
           <Text role="bodyEm" numberOfLines={1}>
+            {pinned ? "★ " : ""}
             {conversation.title}
           </Text>
           {inProgress ? (
@@ -142,6 +145,7 @@ export default function ConversationsScreen() {
   const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
   const [previews, setPreviews] = useState<Record<string, string>>({});
   const [runningConvs, setRunningConvs] = useState<Set<string>>(new Set());
+  const [pinned, setPinned] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -352,6 +356,11 @@ export default function ConversationsScreen() {
     return () => clearTimeout(timer);
   }, [load]);
 
+  useEffect(() => {
+    if (!agentId) return;
+    void loadPinned(pinnedConversationsKey(agentId)).then(setPinned);
+  }, [agentId]);
+
   // Coming back from a chat, the list is stale: titles get auto-summarized and
   // a new conversation may exist. Refetch on focus, but not on every quick
   // flip back and forth.
@@ -444,7 +453,14 @@ export default function ConversationsScreen() {
 
   const showActions = (conversation: ConversationSummary) => {
     const deletable = activeProfile ? canDeleteConversations({ profile: activeProfile, secret: "" }) : false;
+    const pinKey = agentId ? pinnedConversationsKey(agentId) : null;
     Alert.alert(conversation.title, undefined, [
+      ...(pinKey
+        ? [{
+            text: pinned.has(conversation.id) ? "Unpin" : "Pin to top",
+            onPress: () => void togglePinned(pinKey, conversation.id).then(setPinned),
+          }]
+        : []),
       { text: "Rename", onPress: () => openRename(conversation) },
       // Remote app-servers have no delete command — don't offer what can't work.
       ...(deletable
@@ -454,9 +470,9 @@ export default function ConversationsScreen() {
     ]);
   };
 
-  const filtered = (conversations ?? []).filter((c) =>
-    c.title.toLowerCase().includes(search.trim().toLowerCase()),
-  );
+  const filtered = (conversations ?? [])
+    .filter((c) => c.title.toLowerCase().includes(search.trim().toLowerCase()))
+    .sort((a, b) => Number(pinned.has(b.id)) - Number(pinned.has(a.id)));
 
   return (
     <Screen>
@@ -512,6 +528,7 @@ export default function ConversationsScreen() {
               conversation={item}
               preview={previews[item.id]}
               running={runningConvs.has(item.id)}
+              pinned={pinned.has(item.id)}
               onPress={() => openChat(item)}
               onLongPress={() => showActions(item)}
             />

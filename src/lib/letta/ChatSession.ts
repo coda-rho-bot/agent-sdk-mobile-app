@@ -90,6 +90,11 @@ export function subscribeConversationActivity(listener: () => void): () => void 
   return () => activityListeners.delete(listener);
 }
 
+/** A sent run that produces no local stream traffic within this window is
+ * considered to be executing on another listener (bound harness) — the
+ * session switches to tail-chase reconciliation for its content. */
+const LOCAL_RUN_SILENCE_MS = 15_000;
+
 export class ChatSession {
   private conn: { profile: Profile; secret: string };
   private conversationId: string;
@@ -172,6 +177,14 @@ export class ChatSession {
   private lastTailDate: string | null = null;
   /** Newest terminal run id seen by the tail sweep — null until first sweep. */
   private lastSeenRunId: string | null = null;
+  /**
+   * Last time the LOCAL stream delivered anything. A send whose run executes
+   * on ANOTHER listener (the conversation's bound harness) streams nothing
+   * here — localRunInFlight would stick true forever (no result frame ever
+   * arrives), keeping the heartbeat off and the response invisible. The
+   * heartbeat clears the flag after LOCAL_RUN_SILENCE of no local traffic.
+   */
+  private lastLocalStreamAt = 0;
   // --- Background external-run polling ---
   // The relay does not fan out cross-client events (no deltas, loop_status,
   // or result reach this session for runs started elsewhere), so while the
@@ -290,6 +303,7 @@ export class ChatSession {
     // status stay authoritative from here.
     if (this.snapshot.run === "idle") this.commit(patch(this.snapshot, { run: "running" }));
     this.localRunInFlight = true;
+    this.lastLocalStreamAt = Date.now();
     try {
       // The SDK takes either a string or a multimodal content array; images
       // lead so the model reads them as context for the instruction.
@@ -731,7 +745,14 @@ export class ChatSession {
   private startHeartbeat(): void {
     if (this.heartbeatTimer || this.closed) return;
     this.heartbeatTimer = setInterval(() => {
-      if (this.closed || this.localRunInFlight) return;
+      if (this.closed) return;
+      // A "local" run with no local stream traffic for LOCAL_RUN_SILENCE is
+      // executing on another listener (no fanout, no result frame here) —
+      // clear the flag so the tail chase can surface the response.
+      if (this.localRunInFlight && Date.now() - this.lastLocalStreamAt > LOCAL_RUN_SILENCE_MS) {
+        this.localRunInFlight = false;
+      }
+      if (this.localRunInFlight) return;
       void this.reconcileTailV2();
     }, 3_000);
   }
@@ -1071,6 +1092,7 @@ export class ChatSession {
    * commits immediately — interactivity must never wait on the buffer.
    */
   private ingest(message: SDKMessage): void {
+    this.lastLocalStreamAt = Date.now();
     this.settleActivityWaiters();
     // External run tracking: deltas arriving with no local turn in flight
     // belong to a run another client started. `result` frames are only

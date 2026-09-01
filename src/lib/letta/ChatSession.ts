@@ -670,7 +670,6 @@ export class ChatSession {
       if (terminal.id === this.lastSeenRunId) return;
       const previousRunId = this.lastSeenRunId;
       this.lastSeenRunId = terminal.id;
-      console.log(`[TAIL] new run ${terminal.id.slice(-8)} — chasing messages`);
       // New run completed — chase messages until the write is visible. On
       // failure, revert the marker so the next sweep re-chases: message
       // indexing lag can exceed any fixed budget, and a consumed run id
@@ -679,11 +678,9 @@ export class ChatSession {
       for (let attempt = 0; attempt < 20 && !landed; attempt++) {
         if (this.closed) return;
         landed = await this.applyTailMessages();
-        console.log(`[TAIL] attempt ${attempt} landed=${landed}`);
         if (!landed) await new Promise((r) => setTimeout(r, 2_000));
       }
       if (!landed && !this.closed) {
-        console.log("[TAIL] chase budget exhausted — will retry next sweep");
         this.lastSeenRunId = previousRunId;
       }
     } catch (e) {
@@ -697,7 +694,6 @@ export class ChatSession {
     // listConversationMessages returns the page OLDEST-FIRST (it reverses
     // internally) — apply in that order directly.
     const messages = page.messages as Array<{ date?: string }>;
-    console.log(`[TAIL] page ${messages.length} lastDate=${messages[messages.length - 1]?.date ?? "?"} gate=${this.lastTailDate ?? "?"}`);
     if (!messages.length) return false;
     const acc = this.accumulator as unknown as { applyHistoryMessage(m: unknown): unknown };
     let newest = this.lastTailDate ?? "";
@@ -713,13 +709,7 @@ export class ChatSession {
       this.lastTailDate = newest;
       this.commit(this.project(this.snapshot));
     }
-    if (runDoneAt === 0) return changed;
-    // Caught up when any page message is dated at/after the run's completion
-    // (5s clock-skew margin).
-    return messages.some((m) => {
-      const t = m.date ? Date.parse(m.date) : 0;
-      return t >= runDoneAt - 5_000;
-    });
+    return changed;
   }
 
   /** Begin REST reconciliation while a run we don't own is in flight. */
@@ -740,9 +730,7 @@ export class ChatSession {
    */
   private startHeartbeat(): void {
     if (this.heartbeatTimer || this.closed) return;
-    console.log("[HB] heartbeat starting");
     this.heartbeatTimer = setInterval(() => {
-      console.log(`[HB] tick closed=${this.closed} local=${this.localRunInFlight}`);
       if (this.closed || this.localRunInFlight) return;
       void this.reconcileTailV2();
     }, 3_000);
@@ -1352,4 +1340,3 @@ function isTransportError(message: string): boolean {
   return /network|socket|connect|timed?\s?out|closed|unavailable|offline|interrupt|stream ended/i.test(message);
 }
 
-// MARKER-ZQX bundler input test 1788273723

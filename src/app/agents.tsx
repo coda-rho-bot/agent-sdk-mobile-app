@@ -10,10 +10,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Alert, FlatList, RefreshControl, StyleSheet, TextInput, View } from "react-native";
 
 import { Bloop } from "../components/ui/Bloop";
+import { Sheet } from "../components/ui/Sheet";
 import { Dropdown } from "../components/ui/Dropdown";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Header, Screen } from "../components/ui/Screen";
-import { Sheet } from "../components/ui/Sheet";
 import { SkeletonList } from "../components/ui/Skeleton";
 import { StatusDot } from "../components/ui/StatusDot";
 import { Text } from "../components/ui/Text";
@@ -186,6 +186,8 @@ export default function AgentsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState("");
   const [avatars, setAvatars] = useState<Record<string, string>>({});
+  const actionsSheetRef = useRef<BottomSheetModal>(null);
+  const [actionTarget, setActionTarget] = useState<AgentSummary | null>(null);
   const [runningAgents, setRunningAgents] = useState<Set<string>>(new Set());
   const [pinned, setPinned] = useState<Set<string>>(new Set());
   useEffect(() => {
@@ -451,18 +453,8 @@ export default function AgentsScreen() {
   };
 
   const showActions = (agent: AgentSummary) => {
-    const key = activeProfile ? pinnedAgentsKey(activeProfile.id) : null;
-    Alert.alert(agent.name, undefined, [
-      ...(key
-        ? [{
-            text: pinned.has(agent.id) ? "Unpin" : "Pin to top",
-            onPress: () => void togglePinned(key, agent.id).then(setPinned),
-          }]
-        : []),
-      { text: "Rename", onPress: () => openEdit(agent) },
-      { text: "Delete", style: "destructive", onPress: () => confirmDelete(agent) },
-      { text: "Cancel", style: "cancel" },
-    ]);
+    setActionTarget(agent);
+    actionsSheetRef.current?.present();
   };
 
   const filtered = (agents ?? [])
@@ -764,11 +756,65 @@ export default function AgentsScreen() {
           }
         }}
       />
+      <Sheet
+        ref={actionsSheetRef}
+        title={actionTarget?.name ?? "Actions"}
+        onSheetDismiss={() => setActionTarget(null)}
+      >
+        {actionTarget ? (
+          (() => {
+            const key = activeProfile ? pinnedAgentsKey(activeProfile.id) : null;
+            const pinnedNow = pinned.has(actionTarget.id);
+            return (
+              <>
+                {key ? (
+                  <Touchable
+                    accessibilityRole="button"
+                    accessibilityLabel={pinnedNow ? `Unpin ${actionTarget.name}` : `Pin ${actionTarget.name} to top`}
+                    onPress={() => {
+                      void togglePinned(key!, actionTarget.id).then(setPinned);
+                      actionsSheetRef.current?.dismiss();
+                    }}
+                    style={styles.actionRow}
+                  >
+                    <Text role="body">{pinnedNow ? "★ Unpin" : "☆ Pin to top"}</Text>
+                  </Touchable>
+                ) : null}
+                <Touchable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Rename ${actionTarget.name}`}
+                  onPress={() => {
+                    actionsSheetRef.current?.dismiss();
+                    openEdit(actionTarget);
+                  }}
+                  style={styles.actionRow}
+                >
+                  <Text role="body">Rename</Text>
+                </Touchable>
+                <Touchable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Delete ${actionTarget.name}`}
+                  onPress={() => {
+                    actionsSheetRef.current?.dismiss();
+                    confirmDelete(actionTarget);
+                  }}
+                  style={styles.actionRow}
+                >
+                  <Text role="body" tone="danger">
+                    Delete
+                  </Text>
+                </Touchable>
+              </>
+            );
+          })()
+        ) : null}
+      </Sheet>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  actionRow: { paddingVertical: 14 },
   list: { paddingBottom: space.xxl, flexGrow: 1 },
   row: { paddingHorizontal: space.gutter },
   rowInner: { flexDirection: "row", alignItems: "center", gap: space.md, paddingVertical: 14 },

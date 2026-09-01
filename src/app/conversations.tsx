@@ -144,6 +144,8 @@ export default function ConversationsScreen() {
 
   const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
   const [previews, setPreviews] = useState<Record<string, string>>({});
+  const actionsSheetRef = useRef<BottomSheetModal>(null);
+  const [actionTarget, setActionTarget] = useState<ConversationSummary | null>(null);
   const [runningConvs, setRunningConvs] = useState<Set<string>>(new Set());
   const [pinned, setPinned] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
@@ -452,22 +454,8 @@ export default function ConversationsScreen() {
   };
 
   const showActions = (conversation: ConversationSummary) => {
-    const deletable = activeProfile ? canDeleteConversations({ profile: activeProfile, secret: "" }) : false;
-    const pinKey = agentId ? pinnedConversationsKey(agentId) : null;
-    Alert.alert(conversation.title, undefined, [
-      ...(pinKey
-        ? [{
-            text: pinned.has(conversation.id) ? "Unpin" : "Pin to top",
-            onPress: () => void togglePinned(pinKey, conversation.id).then(setPinned),
-          }]
-        : []),
-      { text: "Rename", onPress: () => openRename(conversation) },
-      // Remote app-servers have no delete command — don't offer what can't work.
-      ...(deletable
-        ? [{ text: "Delete", style: "destructive" as const, onPress: () => confirmDelete(conversation) }]
-        : []),
-      { text: "Cancel", style: "cancel" as const },
-    ]);
+    setActionTarget(conversation);
+    actionsSheetRef.current?.present();
   };
 
   const filtered = (conversations ?? [])
@@ -744,11 +732,70 @@ export default function ConversationsScreen() {
           }
         }}
       />
+      <Sheet
+        ref={actionsSheetRef}
+        title={actionTarget?.title ?? "Actions"}
+        onSheetDismiss={() => setActionTarget(null)}
+      >
+        {actionTarget ? (
+          (() => {
+            const pinKey = agentId ? pinnedConversationsKey(agentId) : null;
+            const pinnedNow = pinned.has(actionTarget.id);
+            const deletable = activeProfile
+              ? canDeleteConversations({ profile: activeProfile, secret: "" })
+              : false;
+            return (
+              <>
+                {pinKey ? (
+                  <Touchable
+                    accessibilityRole="button"
+                    accessibilityLabel={pinnedNow ? `Unpin ${actionTarget.title}` : `Pin ${actionTarget.title} to top`}
+                    onPress={() => {
+                      void togglePinned(pinKey, actionTarget.id).then(setPinned);
+                      actionsSheetRef.current?.dismiss();
+                    }}
+                    style={styles.actionRow}
+                  >
+                    <Text role="body">{pinnedNow ? "★ Unpin" : "☆ Pin to top"}</Text>
+                  </Touchable>
+                ) : null}
+                <Touchable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Rename ${actionTarget.title}`}
+                  onPress={() => {
+                    actionsSheetRef.current?.dismiss();
+                    openRename(actionTarget);
+                  }}
+                  style={styles.actionRow}
+                >
+                  <Text role="body">Rename</Text>
+                </Touchable>
+                {deletable ? (
+                  <Touchable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Delete ${actionTarget.title}`}
+                    onPress={() => {
+                      actionsSheetRef.current?.dismiss();
+                      confirmDelete(actionTarget);
+                    }}
+                    style={styles.actionRow}
+                  >
+                    <Text role="body" tone="danger">
+                      Delete
+                    </Text>
+                  </Touchable>
+                ) : null}
+              </>
+            );
+          })()
+        ) : null}
+      </Sheet>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  actionRow: { paddingVertical: 14 },
   runningRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   list: { paddingBottom: space.xxl, flexGrow: 1 },
   row: { paddingHorizontal: space.gutter },

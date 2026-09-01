@@ -167,6 +167,7 @@ export class ChatSession {
    * session's stream queues behind the busy run and delivers nothing.
    */
   private reconcileTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   // --- Background external-run polling ---
   // The relay does not fan out cross-client events (no deltas, loop_status,
   // or result reach this session for runs started elsewhere), so while the
@@ -231,6 +232,7 @@ export class ChatSession {
     // concurrent clients, so nothing here contends for a socket.
     void this.consume();
     this.watchDeviceStatus(this.session);
+    this.startHeartbeat();
     return this.session;
   }
 
@@ -649,6 +651,21 @@ export class ChatSession {
     }, 3_000);
   }
 
+  /**
+   * Open-chat heartbeat: the relay delivers NO events for other clients' runs
+   * (no deltas, no loop_status, no device-status pushes), so a chat that is
+   * open-and-idle when a desktop run starts has no signal to trigger on. While
+   * the session is open and no local run is in flight, reconcile at a low
+   * cadence unconditionally; known-active external runs use the faster loop.
+   */
+  private startHeartbeat(): void {
+    if (this.heartbeatTimer || this.closed) return;
+    this.heartbeatTimer = setInterval(() => {
+      if (this.closed || this.localRunInFlight) return;
+      void this.hydrate();
+    }, 5_000);
+  }
+
   private stopExternalReconcile(): void {
     if (!this.reconcileTimer) return;
     clearInterval(this.reconcileTimer);
@@ -794,6 +811,10 @@ export class ChatSession {
   close(): void {
     this.closed = true;
     this.stopExternalReconcile();
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
     this.accumulator.reset();
     this.localRows = [];
     this.echoOtids.clear();

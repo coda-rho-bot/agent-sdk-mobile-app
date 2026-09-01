@@ -21,7 +21,7 @@ import { createTranscriptAccumulator } from "@letta-ai/letta-agent-sdk/client";
 
 import { toImageContent, type Attachment } from "./attachments";
 import type { Profile } from "../profiles/profiles";
-import { getConversationModel, isAuthError, listConversationMessages, sdkClient } from "./api";
+import { getConversationModel, isAuthError, listConversationMessages, listConversationRuns, sdkClient } from "./api";
 import { emptyChat, type ApprovalRequest, type ChatSnapshot, type PermissionMode, type ToolStatus, type TranscriptItem } from "./model";
 import { patch } from "./mockSession";
 import { contentToText, formatToolInput } from "./toolText";
@@ -168,6 +168,10 @@ export class ChatSession {
    */
   private reconcileTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  /** Date of the newest message the transcript holds — tail-merge high-water mark. */
+  private lastTailDate: string | null = null;
+  /** Newest terminal run id seen by the tail sweep — null until first sweep. */
+  private lastSeenRunId: string | null = null;
   // --- Background external-run polling ---
   // The relay does not fan out cross-client events (no deltas, loop_status,
   // or result reach this session for runs started elsewhere), so while the
@@ -642,12 +646,88 @@ export class ChatSession {
    * Without this a resume can leave the UI stuck ("Running" forever, stop
    * button frozen) after the run it remembers has long since finished.
    */
+  /**
+   * Incremental tail sync for open chats. The runs endpoint is fresh
+   * immediately; the messages endpoint lags writes by tens of seconds — so
+   * the heartbeat sweeps RUNS, and only when a new terminal run appears does
+   * it chase messages (retrying until the write becomes visible). Rows apply
+   * via applyHistoryMessage (keyed merge, no reorder) — a full rebase() here
+   * churned the transcript (the "history wiped" brick).
+   */
+  private async reconcileTailV2(): Promise<void> {
+    if (this.closed) return;
+    try {
+      const runs = await listConversationRuns(this.conn, this.conversationId, { limit: 3 });
+      const terminal = runs.find(
+        (r) => r.status === "completed" || r.status === "failed" || r.status === "cancelled",
+      );
+      if (!terminal) return;
+      if (this.lastSeenRunId === null) {
+        // First sweep after open: baseline without applying (hydrate covered it).
+        this.lastSeenRunId = terminal.id;
+        return;
+      }
+      if (terminal.id === this.lastSeenRunId) return;
+      const previousRunId = this.lastSeenRunId;
+      this.lastSeenRunId = terminal.id;
+      console.log(`[TAIL] new run ${terminal.id.slice(-8)} — chasing messages`);
+      // New run completed — chase messages until the write is visible. On
+      // failure, revert the marker so the next sweep re-chases: message
+      // indexing lag can exceed any fixed budget, and a consumed run id
+      // would strand the content until the next full hydrate.
+      let landed = false;
+      for (let attempt = 0; attempt < 20 && !landed; attempt++) {
+        if (this.closed) return;
+        landed = await this.applyTailMessages();
+        console.log(`[TAIL] attempt ${attempt} landed=${landed}`);
+        if (!landed) await new Promise((r) => setTimeout(r, 2_000));
+      }
+      if (!landed && !this.closed) {
+        console.log("[TAIL] chase budget exhausted — will retry next sweep");
+        this.lastSeenRunId = previousRunId;
+      }
+    } catch (e) {
+      console.log(`[TAIL] error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** Fetch newest page, apply rows newer than lastTailDate. True when rows landed. */
+  private async applyTailMessages(runDoneAt = 0): Promise<boolean> {
+    const page = await this.fetchHistoryPage();
+    // listConversationMessages returns the page OLDEST-FIRST (it reverses
+    // internally) — apply in that order directly.
+    const messages = page.messages as Array<{ date?: string }>;
+    console.log(`[TAIL] page ${messages.length} lastDate=${messages[messages.length - 1]?.date ?? "?"} gate=${this.lastTailDate ?? "?"}`);
+    if (!messages.length) return false;
+    const acc = this.accumulator as unknown as { applyHistoryMessage(m: unknown): unknown };
+    let newest = this.lastTailDate ?? "";
+    let changed = false;
+    for (const m of messages) {
+      const d = m.date ?? "";
+      if (!d || d <= newest) continue;
+      acc.applyHistoryMessage(m);
+      changed = true;
+      newest = d;
+    }
+    if (changed) {
+      this.lastTailDate = newest;
+      this.commit(this.project(this.snapshot));
+    }
+    if (runDoneAt === 0) return changed;
+    // Caught up when any page message is dated at/after the run's completion
+    // (5s clock-skew margin).
+    return messages.some((m) => {
+      const t = m.date ? Date.parse(m.date) : 0;
+      return t >= runDoneAt - 5_000;
+    });
+  }
+
   /** Begin REST reconciliation while a run we don't own is in flight. */
   private startExternalReconcile(): void {
     if (this.reconcileTimer || this.closed) return;
     this.reconcileTimer = setInterval(() => {
       if (this.closed || this.localRunInFlight) return;
-      void this.hydrate();
+      void this.reconcileTailV2();
     }, 3_000);
   }
 
@@ -660,10 +740,12 @@ export class ChatSession {
    */
   private startHeartbeat(): void {
     if (this.heartbeatTimer || this.closed) return;
+    console.log("[HB] heartbeat starting");
     this.heartbeatTimer = setInterval(() => {
+      console.log(`[HB] tick closed=${this.closed} local=${this.localRunInFlight}`);
       if (this.closed || this.localRunInFlight) return;
-      void this.hydrate();
-    }, 5_000);
+      void this.reconcileTailV2();
+    }, 3_000);
   }
 
   private stopExternalReconcile(): void {
@@ -874,6 +956,13 @@ export class ChatSession {
       // replay thresholds the page proves. Appending would double the transcript
       // on every foreground resume, which is exactly what it used to do.
       this.accumulator.rebase({ messages: page.messages as never }, { order: "asc" });
+      // Seed the tail high-water mark: listConversationMessages returns the
+      // page OLDEST-FIRST, so the LAST message carries the newest date.
+      {
+        const pm = page.messages as Array<{ date?: string }>;
+        const nd = pm.length ? pm[pm.length - 1]?.date : undefined;
+        if (nd && nd > (this.lastTailDate ?? "")) this.lastTailDate = nd;
+      }
       this.commit(
         this.project(patch(this.snapshot, { hydrating: false, hasMore: page.hasMore })),
       );
@@ -1263,3 +1352,4 @@ function isTransportError(message: string): boolean {
   return /network|socket|connect|timed?\s?out|closed|unavailable|offline|interrupt|stream ended/i.test(message);
 }
 
+// MARKER-ZQX bundler input test 1788273723

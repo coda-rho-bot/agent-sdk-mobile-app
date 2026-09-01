@@ -50,6 +50,7 @@ import { Touchable } from "../components/ui/Touchable";
 import { haptic } from "../lib/haptics";
 import { ChatSession } from "../lib/letta/ChatSession";
 import { setVisibleConversation } from "../../modules/background-poll";
+import { isNativelyWatched } from "../lib/backgroundPolling";
 
 import {
   NotificationMode,
@@ -381,7 +382,11 @@ export default function ChatScreen() {
       if (mode === NotificationMode.OFF) return;
       // MOBILE_ONLY: only notify for runs started from this app.
       if (mode === NotificationMode.MOBILE_ONLY && isExternal) return;
-      // ALL_MESSAGES: notify for all runs.
+      // ALL_MESSAGES: notify for all runs — EXCEPT when the native poller
+      // owns this conversation's notifications (it posts the rich one;
+      // before this guard both systems fired and every completion was a
+      // double notification: generic JS text + rich native card).
+      if (mode === NotificationMode.ALL_MESSAGES && isNativelyWatched(conversationId)) return;
       await postConversationNotification(
         conversationId,
         title,

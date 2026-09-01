@@ -23,11 +23,24 @@ const MAX_CONVERSATIONS = 50;
 const MAX_AGENTS = 10;
 
 let startInFlight = false;
+/**
+ * Conversation ids handed to the native poller this session. The JS-side
+ * notification path (chat.tsx handleRunCompletion) consults this to avoid
+ * DOUBLE notifications: the poller posts the rich notification for watched
+ * conversations (always-on since foreground polling landed), so the JS path
+ * must defer to it. Unset when the poller stops.
+ */
+const nativelyWatched = new Set<string>();
 
 /**
  * Enumerate ALL_MESSAGES conversations for the profile and start the native
  * poller. No-op (with log) if none qualify or the profile/token is missing.
  */
+
+/** True when the native poller is watching this conversation (its notifications own it). */
+export function isNativelyWatched(conversationId: string): boolean {
+  return nativelyWatched.has(conversationId);
+}
 export async function startBackgroundPollingForProfile(profile: Profile | null): Promise<void> {
   if (startInFlight) return;
   startInFlight = true;
@@ -67,10 +80,12 @@ export async function startBackgroundPollingForProfile(profile: Profile | null):
       return;
     }
 
+    nativelyWatched.clear();
     if (specs.length === 0) {
       console.log("[BG-POLL] no ALL_MESSAGES conversations — not starting");
       return;
     }
+    for (const spec of specs) nativelyWatched.add(spec.conversationId);
     console.log(`[BG-POLL] starting for ${specs.length} conversation(s): ${specs.map((s) => s.conversationId.slice(-8)).join(",")}`);
     await nativeStartPolling({
       conversations: specs,

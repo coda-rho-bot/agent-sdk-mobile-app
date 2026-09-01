@@ -548,6 +548,11 @@ export default function AgentsScreen() {
               <EmptyState message="No agents yet. Create your first one." actionLabel="Create agent" onAction={openCreate} />
             )
           }
+          ListFooterComponent={
+            <Text role="sub" ink={3} style={styles.footer}>
+              Long-press an agent for actions.
+            </Text>
+          }
         />
       )}
 
@@ -814,6 +819,7 @@ export default function AgentsScreen() {
 }
 
 const styles = StyleSheet.create({
+  footer: { paddingVertical: 12, textAlign: "center" },
   actionRow: { paddingVertical: 14 },
   list: { paddingBottom: space.xxl, flexGrow: 1 },
   row: { paddingHorizontal: space.gutter },

@@ -540,7 +540,11 @@ export default function ConversationsScreen() {
               <Text role="sub" ink={3} style={styles.footer}>
                 Loading more…
               </Text>
-            ) : null
+            ) : (
+              <Text role="sub" ink={3} style={styles.footer}>
+                Long-press a conversation for actions.
+              </Text>
+            )
           }
           ListEmptyComponent={
             error ? (

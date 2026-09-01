@@ -773,10 +773,10 @@ export default function ChatScreen() {
                 </View>
               ) : null
             }
+            // RN 0.76+ counter-rotates ListEmptyComponent in inverted lists
+            // automatically — a manual scaleY(-1) wrapper double-flips it.
             ListEmptyComponent={
-              <View style={styles.invertedEmpty}>
-                <EmptyState message={`No messages yet. Say hello to ${agentName}.`} />
-              </View>
+              <EmptyState message={`No messages yet. Say hello to ${agentName}.`} />
             }
             // Dragging the transcript pulls the keyboard down with the gesture.
             keyboardDismissMode="interactive"

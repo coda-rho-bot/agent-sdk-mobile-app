@@ -25,6 +25,8 @@ export function Screen({ children }: { children: ReactNode }) {
 
 interface HeaderProps {
   title: string;
+  /** Leading slot between back affordance and title — e.g. an avatar. */
+  leading?: ReactNode;
   /** Large editorial title (list screens) vs compact (chat). */
   large?: boolean;
   /** Sub-row under the title, e.g. agent identity + status. */
@@ -34,7 +36,7 @@ interface HeaderProps {
   trailing?: ReactNode;
 }
 
-export function Header({ title, large, subtitle, back, trailing }: HeaderProps) {
+export function Header({ title, large, subtitle, back, leading, trailing }: HeaderProps) {
   return (
     <View style={[styles.header, large && styles.headerLarge]}>
       <View style={styles.headerRow}>
@@ -50,6 +52,7 @@ export function Header({ title, large, subtitle, back, trailing }: HeaderProps) 
             </Text>
           </Touchable>
         ) : null}
+        {leading}
         <View style={styles.titleBlock}>
           <Text role={large ? "display" : "bodyEm"} numberOfLines={1}>
             {title}

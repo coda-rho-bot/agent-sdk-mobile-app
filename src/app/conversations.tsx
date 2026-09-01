@@ -1,3 +1,4 @@
+import { Image } from "expo-image";
 /**
  * Conversations for one agent — live list with create, rename, and cursor
  * pagination (docs/design-doc.md §4.3). Cloud lists via REST, remote via
@@ -24,9 +25,11 @@ import {
   canDeleteConversations,
   createConversation,
   deleteConversation,
-    fetchRunActivity,
+  fetchAgentProfilePicture,
   fetchLastAssistantPreview,
-listConversations,
+  fetchRunActivity,
+  listConversationMessages,
+  listConversations,
   listModels,
   renameConversation,
   type ConversationSummary,
@@ -148,6 +151,7 @@ export default function ConversationsScreen() {
   const [actionTarget, setActionTarget] = useState<ConversationSummary | null>(null);
   const [runningConvs, setRunningConvs] = useState<Set<string>>(new Set());
   const [pinned, setPinned] = useState<Set<string>>(new Set());
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -363,6 +367,38 @@ export default function ConversationsScreen() {
     void loadPinned(pinnedConversationsKey(agentId)).then(setPinned);
   }, [agentId]);
 
+  // Agent avatar (cache-first): decoration beside the header title.
+  useEffect(() => {
+    if (!agentId || !activeProfile) return;
+    let cancelled = false;
+    void (async () => {
+      const secret = (await getSecret(activeProfile.id)) ?? "";
+      const AVATAR_KEY = `letta.avatar.${agentId}`;
+      let cachedUrl: string | null = null;
+      try {
+        const cached = await AsyncStorage.getItem(AVATAR_KEY);
+        if (cached) {
+          const parsed = JSON.parse(cached) as { dataUrl?: string };
+          if (parsed.dataUrl) cachedUrl = parsed.dataUrl;
+        }
+      } catch { /* cache miss */ }
+      if (!cancelled && cachedUrl) setAvatarUrl(cachedUrl);
+      const fresh = await fetchAgentProfilePicture({ profile: activeProfile, secret }, agentId);
+      if (cancelled) return;
+      if (fresh) {
+        try {
+          const cached = await AsyncStorage.getItem(AVATAR_KEY);
+          const parsed = cached ? (JSON.parse(cached) as { commitSha?: string | null }) : null;
+          if (!(parsed && parsed.commitSha === fresh.commitSha && cachedUrl)) {
+            await AsyncStorage.setItem(AVATAR_KEY, JSON.stringify(fresh));
+            setAvatarUrl(fresh.dataUrl);
+          }
+        } catch { /* cache write fail — still render */ }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [agentId, activeProfile]);
+
   // Coming back from a chat, the list is stale: titles get auto-summarized and
   // a new conversation may exist. Refetch on focus, but not on every quick
   // flip back and forth.
@@ -468,6 +504,11 @@ export default function ConversationsScreen() {
         title={agentName}
         large
         back
+        leading={
+          avatarUrl ? (
+            <Image source={{ uri: avatarUrl }} style={styles.headerAvatar} contentFit="cover" transition={150} />
+          ) : undefined
+        }
         subtitle={
           <Text role="sub" ink={2}>
             {conversations ? `${conversations.length}${hasMore ? "+" : ""} conversations` : "Conversations"}
@@ -799,6 +840,7 @@ export default function ConversationsScreen() {
 }
 
 const styles = StyleSheet.create({
+  headerAvatar: { width: 44, height: 44, borderRadius: 999 },
   actionRow: { paddingVertical: 14 },
   runningRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   list: { paddingBottom: space.xxl, flexGrow: 1 },

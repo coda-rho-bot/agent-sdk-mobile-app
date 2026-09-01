@@ -135,20 +135,36 @@ function AgentRow({
  */
 const AVATAR_CACHE_PREFIX = "letta.avatar.";
 
+/**
+ * Cache-first: a stored avatar renders instantly, then a background request
+ * validates the MemFS commit — the image is only re-downloaded when the
+ * commit changed. Returns the cache hit immediately (null = nothing cached
+ * and/or nothing on the server — the caller falls back to the Bloop mark).
+ */
 async function loadAgentAvatar(
   conn: { profile: Profile; secret: string },
   agentId: string,
 ): Promise<string | null> {
-  const fresh = await fetchAgentProfilePicture(conn, agentId);
-  if (!fresh) return null;
+  let cachedDataUrl: string | null = null;
   try {
     const cached = await AsyncStorage.getItem(AVATAR_CACHE_PREFIX + agentId);
     if (cached) {
-      const parsed = JSON.parse(cached) as { dataUrl: string; commitSha: string | null };
-      if (parsed.dataUrl && parsed.commitSha === fresh.commitSha) return parsed.dataUrl;
+      const parsed = JSON.parse(cached) as { dataUrl?: string };
+      if (parsed.dataUrl) cachedDataUrl = parsed.dataUrl;
     }
   } catch {
-    // Cache read failure is invisible — fall through to the fresh image.
+    // Cache read failure is invisible — fall through to the network.
+  }
+  const fresh = await fetchAgentProfilePicture(conn, agentId);
+  if (!fresh) return cachedDataUrl;
+  if (cachedDataUrl) {
+    try {
+      const cached = await AsyncStorage.getItem(AVATAR_CACHE_PREFIX + agentId);
+      const parsed = cached ? (JSON.parse(cached) as { commitSha?: string | null }) : null;
+      if (parsed && parsed.commitSha === fresh.commitSha) return cachedDataUrl;
+    } catch {
+      // fall through — refresh the cache
+    }
   }
   try {
     await AsyncStorage.setItem(AVATAR_CACHE_PREFIX + agentId, JSON.stringify(fresh));

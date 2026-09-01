@@ -20,6 +20,7 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
@@ -291,6 +292,35 @@ class BackgroundPollService : Service() {
    */
   private fun avatarFor(spec: ConversationSpec): Bitmap? {
     avatarCache[spec.agentId]?.let { return it }
+    // Disk cache first — survives app restarts, so the first notification
+    // after a reboot already carries the agent picture.
+    val disk = loadAvatarFromDisk(spec.agentId)
+    if (disk != null) {
+      avatarCache[spec.agentId] = disk
+      // Refresh from the network in the background; the cached copy renders now.
+      scheduler?.submit { fetchAvatarFromNetwork(spec) }
+      return disk
+    }
+    return fetchAvatarFromNetwork(spec)
+  }
+
+  private fun avatarFile(agentId: String): File {
+    val dir = File(filesDir, "avatars")
+    if (!dir.exists()) dir.mkdirs()
+    return File(dir, "$agentId.png")
+  }
+
+  private fun loadAvatarFromDisk(agentId: String): Bitmap? {
+    return try {
+      val f = avatarFile(agentId)
+      if (!f.exists()) return null
+      BitmapFactory.decodeFile(f.absolutePath)
+    } catch (e: Exception) {
+      null
+    }
+  }
+
+  private fun fetchAvatarFromNetwork(spec: ConversationSpec): Bitmap? {
     return try {
       val body = httpGet("$baseUrl/v1/agents/${spec.agentId}/profile-picture")
       val dataUrl = JSONObject(body).optString("data_url")
@@ -300,6 +330,13 @@ class BackgroundPollService : Service() {
       val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
       if (bmp != null) {
         avatarCache[spec.agentId] = bmp
+        try {
+          java.io.FileOutputStream(avatarFile(spec.agentId)).use { out ->
+            bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+          }
+        } catch (e: Exception) {
+          Log.w(TAG, "avatar disk write failed: ${e.message}")
+        }
         Log.d(TAG, "avatar loaded for agent ${spec.agentId.takeLast(8)} (${bytes.size}B)")
       }
       bmp

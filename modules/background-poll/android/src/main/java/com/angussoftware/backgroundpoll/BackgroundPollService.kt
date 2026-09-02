@@ -153,6 +153,14 @@ class BackgroundPollService : Service() {
           synchronized(notifiedRunIds) { notifiedRunIds.add(id) }
           continue
         }
+        // The turn completed while the user was on that screen (they left
+        // before this sweep ran): it already played out live — consume it,
+        // don't notify retroactively. 5s margin absorbs clock skew.
+        val visUntil = visibleUntil[convId]
+        if (completedAt != null && visUntil != null && completedAt <= visUntil + 5_000L) {
+          synchronized(notifiedRunIds) { notifiedRunIds.add(id) }
+          continue
+        }
         val isNew: Boolean
         synchronized(notifiedRunIds) {
           isNew = notifiedRunIds.add(id)
@@ -447,23 +455,33 @@ class BackgroundPollService : Service() {
     // One UI's collapsed row renders the LARGE icon as its left-side image;
     // without it the row falls back to the small (app) icon. Set both the
     // person avatar (expanded layout) and the large icon (collapsed row).
-    val builder = NotificationCompat.Builder(this, channelId)
-      .setPriority(NotificationCompat.PRIORITY_HIGH)
-    builder
-      .setSmallIcon(
-        resources.getIdentifier("notif_transparent", "drawable", packageName)
-          .takeIf { it != 0 } ?: applicationInfo.icon
-      )
-      .setContentIntent(pending)
-      .setAutoCancel(true)
-      .setShortcutId(spec.conversationId)
-      .setLargeIcon(avatar)
-      .setStyle(
-        NotificationCompat.MessagingStyle(person)
-          .addMessage(bodyText, System.currentTimeMillis(), person)
-      )
+    // Platform Notification.Builder (not Compat): setSmallIcon(Icon) — needed
+    // for the per-agent app-bar icon — exists only on the platform builder.
+    // MessagingStyle/Person are platform APIs since 24; we're 26+.
+    val smallIcon = if (avatar != null) {
+      android.graphics.drawable.Icon.createWithBitmap(avatar)
+    } else {
+      val resId = resources.getIdentifier("ic_launcher_foreground", "mipmap", packageName)
+        .takeIf { it != 0 }
+        ?: resources.getIdentifier("ic_launcher_foreground", "drawable", packageName)
+          .takeIf { it != 0 }
+        ?: applicationInfo.icon
+      android.graphics.drawable.Icon.createWithResource(packageName, resId)
+    }
+    val platformPerson = person.toAndroidPerson()
+    val style = Notification.MessagingStyle(platformPerson)
+      .addMessage(Notification.MessagingStyle.Message(bodyText, System.currentTimeMillis(), platformPerson))
+    val notification =
+      Notification.Builder(this, channelId)
+        .setSmallIcon(smallIcon)
+        .setContentIntent(pending)
+        .setAutoCancel(true)
+        .setShortcutId(spec.conversationId)
+        .setLargeIcon(avatar)
+        .setStyle(style)
+        .build()
     val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-    nm.notify(spec.conversationId.hashCode(), builder.build())
+    nm.notify(spec.conversationId.hashCode(), notification)
   }
 
   private fun ensureChannels() {
@@ -501,6 +519,22 @@ class BackgroundPollService : Service() {
     /** The conversation currently on screen — notifications for it are suppressed. */
     @Volatile
     var visibleConversationId: String? = null
+    /**
+     * Per-conversation wall clock of when the user LAST left that screen —
+     * runs completing before this stamp played out in front of the user and
+     * must be consumed even if the next sweep runs after they left (the
+     * leave-before-sweep window that fired retroactive notifications).
+     */
+    private val visibleUntil = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** Visibility transition recorder — called by the module on every change. */
+    fun reportVisibleConversation(conversationId: String?) {
+      val previous = visibleConversationId
+      if (previous != null && previous != conversationId) {
+        visibleUntil[previous] = System.currentTimeMillis()
+      }
+      visibleConversationId = conversationId
+    }
     const val FGS_NOTIFICATION_ID = 93001
     const val FGS_CHANNEL_ID = "background_polling"
     const val CONVERSATIONS_CHANNEL_ID = "conversations"

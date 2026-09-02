@@ -32,15 +32,15 @@ let startInFlight = false;
  */
 const nativelyWatched = new Set<string>();
 
-/**
- * Enumerate ALL_MESSAGES conversations for the profile and start the native
- * poller. No-op (with log) if none qualify or the profile/token is missing.
- */
-
 /** True when the native poller is watching this conversation (its notifications own it). */
 export function isNativelyWatched(conversationId: string): boolean {
   return nativelyWatched.has(conversationId);
 }
+
+/**
+ * Enumerate ALL_MESSAGES conversations for the profile and start the native
+ * poller. No-op (with log) if none qualify or the profile/token is missing.
+ */
 export async function startBackgroundPollingForProfile(profile: Profile | null): Promise<void> {
   if (startInFlight) return;
   startInFlight = true;
@@ -81,10 +81,12 @@ export async function startBackgroundPollingForProfile(profile: Profile | null):
     }
 
     nativelyWatched.clear();
+    nativelyWatched.clear();
     if (specs.length === 0) {
       console.log("[BG-POLL] no ALL_MESSAGES conversations — not starting");
       return;
     }
+    for (const spec of specs) nativelyWatched.add(spec.conversationId);
     for (const spec of specs) nativelyWatched.add(spec.conversationId);
     console.log(`[BG-POLL] starting for ${specs.length} conversation(s): ${specs.map((s) => s.conversationId.slice(-8)).join(",")}`);
     await nativeStartPolling({

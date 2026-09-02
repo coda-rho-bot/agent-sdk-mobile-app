@@ -329,20 +329,12 @@ export async function listConversations(
   opts: { before?: string; limit?: number } = {},
 ): Promise<ConversationSummary[]> {
   const limit = opts.limit ?? 30;
-  // Query params MUST be snake_case: the API ignores the SDK's camelCase
-  // normalization for these (`agentId=` / `orderBy=` are silently dropped),
-  // which returned an unfiltered, creation-ordered list — hiding the agent's
-  // default conversation entirely and showing "(none)" titles everywhere.
-  // The SDK's TS type only declares camelCase keys, but the API reads
-  // snake_case off the wire (camelCase params are silently dropped) —
-  // cast past the type, verified against the live endpoint.
-  const client = sdkClient(conn) as unknown as {
-    conversations: {
-      list: (opts: Record<string, unknown>) => Promise<unknown>;
-    };
-  };
-  const records = (await client.conversations.list({
-    agent_id: agentId,
+  // The wrapper's schema normalizes camelCase to the wire's snake_case
+  // (verified: agentId -> agent_id, orderBy: "lastMessageAt" ->
+  // order_by=last_message_at). Unknown keys — like raw snake_case here —
+  // are STRIPPED by the wrapper's validation, so camelCase is required.
+  const records = await sdkClient(conn).conversations.list({
+    agentId,
     limit,
     // Order by last activity. This matters beyond sorting: the API's default
     // list projection omits `summary` and `last_message_at` (every row renders
@@ -351,12 +343,59 @@ export async function listConversations(
     // last_message_at ordering returns hydrated records — real titles,
     // real timestamps, most-recently-active first — which is also the order
     // a chat app wants anyway.
-    order_by: "last_message_at",
+    orderBy: "lastMessageAt",
     order: "desc",
     // The management API pages with an `after` cursor in sort order.
     ...(opts.before ? { after: opts.before } : {}),
-  })) as ConversationSummary[];
-  return records;
+  });
+  return records.map(toConversation);
+}
+
+/**
+ * The agent's default ("main") conversation — the one every agent starts
+ * with, addressed via the `default` alias on message sends. It is a real
+ * conversation with a real ID, but the list endpoint EXCLUDES it; it is
+ * discoverable only through the agent's runs (their conversation_ids that
+ * never appear in the listed set) and fetchable directly by ID.
+ *
+ * Returns the default conversation(s) for the agent, or an empty array.
+ */
+export async function fetchHiddenConversations(
+  conn: Connection,
+  agentId: string,
+  listedIds: ReadonlySet<string>,
+): Promise<ConversationSummary[]> {
+  if (conn.profile.type !== "cloud") return [];
+  try {
+    const runs = (await cloudFetch(conn, `/v1/runs?agent_id=${encodeURIComponent(agentId)}&limit=30`)) as Array<{
+      conversation_id?: string | null;
+    }>;
+    const hidden = new Set<string>();
+    for (const run of runs) {
+      const cid = run.conversation_id;
+      if (cid && !listedIds.has(cid)) hidden.add(cid);
+    }
+    const out: ConversationSummary[] = [];
+    for (const cid of hidden) {
+      try {
+        const rec = (await cloudFetch(conn, `/v1/conversations/${encodeURIComponent(cid)}`)) as {
+          id?: string;
+          summary?: string | null;
+          last_message_at?: string | null;
+          created_at?: string | null;
+        };
+        if (rec?.id) {
+          out.push(toConversation(rec as never));
+        }
+      } catch {
+        // One unreadable record shouldn't hide the rest.
+      }
+    }
+    return out;
+  } catch {
+    // Discovery is best-effort — the listed set still renders.
+    return [];
+  }
 }
 
 export async function createConversation(conn: Connection, agentId: string): Promise<string> {

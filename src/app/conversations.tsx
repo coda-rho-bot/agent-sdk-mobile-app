@@ -26,6 +26,7 @@ import {
   createConversation,
   deleteConversation,
   fetchAgentProfilePicture,
+  fetchHiddenConversations,
   fetchLastAssistantPreview,
   fetchRunActivity,
   listConversationMessages,
@@ -309,6 +310,22 @@ export default function ConversationsScreen() {
       loadedAt.current = Date.now();
       setConversations(page);
       setHasMore(page.length === PAGE_SIZE);
+      // The agent's default ("main") conversation is excluded from the list
+      // endpoint — discover it via runs and prepend when found. Runs AFTER
+      // the list renders: discovery is several sequential round-trips and
+      // must never delay the first paint. Failure changes nothing.
+      void fetchHiddenConversations({ profile, secret }, agentId, new Set(page.map((c) => c.id)))
+        .then((hidden) => {
+          if (hidden.length > 0) {
+            setConversations((prev) => {
+              if (!prev) return prev;
+              const have = new Set(prev.map((c) => c.id));
+              const add = hidden.filter((c) => !have.has(c.id));
+              return add.length > 0 ? [...add, ...prev] : prev;
+            });
+          }
+        })
+        .catch(() => { /* decoration-grade */ });
       // Decoration layers — never block the list on these.
       // In-progress: one sweep covers every conversation. Refreshed on a
       // cadence while the screen is shown (runs are transient).

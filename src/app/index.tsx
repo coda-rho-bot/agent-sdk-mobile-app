@@ -18,6 +18,7 @@ import { Text } from "../components/ui/Text";
 import { Touchable } from "../components/ui/Touchable";
 import { useProfiles } from "../lib/profiles/ProfilesContext";
 import { loadPinned, PINNED_PROFILES_KEY, togglePinned } from "../lib/favorites";
+import { checkForUpdate, downloadUpdate, type UpdateInfo } from "../lib/updateCheck";
 import { Bloop } from "../components/ui/Bloop";
 import {
   NotificationMode,
@@ -85,8 +86,12 @@ function ModeCard({
 export default function ConnectScreen() {
   const { colors } = useTheme();
   const [pinnedProfiles, setPinnedProfiles] = useState<Set<string>>(new Set());
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
   useEffect(() => {
     void loadPinned(PINNED_PROFILES_KEY).then(setPinnedProfiles);
+    // Side-loaded builds have no store — check the fork's latest release and
+    // surface a banner when the installed APK is behind.
+    void checkForUpdate().then(setUpdate);
   }, []);
 
   const { profiles, activeProfile, setActive } = useProfiles();
@@ -125,6 +130,21 @@ export default function ConnectScreen() {
           </Text>
         </View>
 
+        {update ? (
+          <Touchable
+            accessibilityRole="button"
+            accessibilityLabel={`Update available, version ${update.version}. Download the new build.`}
+            onPress={() => void downloadUpdate(update)}
+            style={[styles.updateBanner, { borderColor: colors.accent }]}
+          >
+            <Text role="sub" tone="accent">
+              ⬆ Update available — v{update.version}
+            </Text>
+            <Text role="sub" ink={3}>
+              Tap to download the latest build
+            </Text>
+          </Touchable>
+        ) : null}
         <View style={styles.cards}>
           <ModeCard
             glyph="☁︎"
@@ -296,6 +316,13 @@ export default function ConnectScreen() {
 }
 
 const styles = StyleSheet.create({
+  updateBanner: {
+    borderRadius: radius.row,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    gap: 2,
+  },
   pinTouch: { paddingHorizontal: 6 },
   content: { paddingHorizontal: space.gutter, paddingBottom: space.xxl },
   topBar: { flexDirection: "row", justifyContent: "flex-end", paddingVertical: space.sm },

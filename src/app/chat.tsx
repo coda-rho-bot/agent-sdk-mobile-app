@@ -68,6 +68,7 @@ import {
   postConversationNotification,
   requestNotificationPermission,
 } from "../lib/notificationPoster";
+import { setStringAsync as copyToClipboard } from "expo-clipboard";
 import {
   getConversationModel,
   isAuthError,
@@ -146,6 +147,37 @@ function statusFor(
   if (run === "aborting") return { label: "Stopping…", tone: "wait" };
   if (run === "awaiting_approval") return { label: "Waiting for you", tone: "wait" };
   return { label: "Connected", tone: "run" };
+}
+
+/** A settings row that copies its value on tap — "Copied" flashes in place. */
+function CopyIdRow({ label, value }: { label: string; value: string }) {
+  const { colors } = useTheme();
+  const [copied, setCopied] = useState(false);
+  return (
+    <Touchable
+      accessibilityRole="button"
+      accessibilityLabel={`${label}: ${value}. Tap to copy`}
+      onPress={() => {
+        void copyToClipboard(value).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        });
+      }}
+      style={styles.idRow}
+    >
+      <View style={styles.idRowInner}>
+        <Text role="sub" ink={3} style={styles.idLabel}>
+          {label}
+        </Text>
+        <Text role="sub" ink={2} mono numberOfLines={1} style={{ flex: 1 }}>
+          {value}
+        </Text>
+        <Text role="sub" tone={copied ? "accent" : undefined} ink={copied ? undefined : 3}>
+          {copied ? "Copied" : "Copy"}
+        </Text>
+      </View>
+    </Touchable>
+  );
 }
 
 export default function ChatScreen() {
@@ -967,6 +999,8 @@ export default function ChatScreen() {
         }}
       />
       <Sheet ref={convSettingsRef} title="Conversation settings" scroll>
+        <CopyIdRow label="Conversation ID" value={params.conversationId ?? "—"} />
+        <CopyIdRow label="Agent ID" value={params.agentId ?? "—"} />
         <Dropdown
           label="Permission mode"
           value={permSetting}
@@ -1102,6 +1136,9 @@ export default function ChatScreen() {
 }
 
 const styles = StyleSheet.create({
+  idRow: { paddingVertical: 10 },
+  idRowInner: { flexDirection: "row", alignItems: "center", gap: 8 },
+  idLabel: { width: 110 },
   flex: { flex: 1 },
   statusRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   // Inverted list: style paddingTop renders at the VISUAL bottom (above the

@@ -469,19 +469,24 @@ export default function AgentsScreen() {
         large
         back
         subtitle={
-          <Touchable
-            accessibilityRole="button"
-            accessibilityLabel={`Connection: ${activeProfile?.name ?? "none"}. Switch connection`}
-            onPress={() => router.dismissTo("/")}
-            style={styles.profileChipTouch}
-          >
-            <View style={styles.profileChip}>
-              <StatusDot tone={activeProfile ? "run" : "idle"} />
-              <Text role="sub" ink={2}>
-                {activeProfile?.name ?? "No connection"}
-              </Text>
-            </View>
-          </Touchable>
+          <View>
+            <Touchable
+              accessibilityRole="button"
+              accessibilityLabel={`Connection: ${activeProfile?.name ?? "none"}. Switch connection`}
+              onPress={() => router.dismissTo("/")}
+              style={styles.profileChipTouch}
+            >
+              <View style={styles.profileChip}>
+                <StatusDot tone={activeProfile ? "run" : "idle"} />
+                <Text role="sub" ink={2}>
+                  {activeProfile?.name ?? "No connection"}
+                </Text>
+              </View>
+            </Touchable>
+            <Text role="sub" ink={3}>
+              Long-press an agent for actions.
+            </Text>
+          </View>
         }
         trailing={
           <View style={styles.headerActions}>

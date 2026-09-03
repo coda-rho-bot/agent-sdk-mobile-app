@@ -42,6 +42,7 @@ import {
   type ConversationActivity,
 } from "../lib/letta/ChatSession";
 import { getSecret, type Profile } from "../lib/profiles/profiles";
+import { setStringAsync as copyToClipboard } from "expo-clipboard";
 import { useProfiles } from "../lib/profiles/ProfilesContext";
 import {
   NotificationMode,
@@ -527,8 +528,9 @@ export default function ConversationsScreen() {
           ) : undefined
         }
         subtitle={
-          <Text role="sub" ink={2}>
+          <Text role="sub" ink={3}>
             {conversations ? `${conversations.length}${hasMore ? "+" : ""} conversations` : "Conversations"}
+            {"\n"}Long-press a conversation for actions.
           </Text>
         }
         trailing={
@@ -598,11 +600,7 @@ export default function ConversationsScreen() {
               <Text role="sub" ink={3} style={styles.footer}>
                 Loading more…
               </Text>
-            ) : (
-              <Text role="sub" ink={3} style={styles.footer}>
-                Long-press a conversation for actions.
-              </Text>
-            )
+            ) : null
           }
           ListEmptyComponent={
             error ? (
@@ -643,6 +641,26 @@ export default function ConversationsScreen() {
       </Sheet>
 
       <Sheet ref={agentSettingsRef} title={agentName} scroll>
+        <Touchable
+          accessibilityRole="button"
+          accessibilityLabel={`Agent ID: ${agentId}. Tap to copy`}
+          onPress={() => {
+            void copyToClipboard(agentId ?? "");
+          }}
+          style={styles.idRow}
+        >
+          <View style={styles.idRowInner}>
+            <Text role="sub" ink={3} style={styles.idLabel}>
+              Agent ID
+            </Text>
+            <Text role="sub" ink={2} mono numberOfLines={1} style={{ flex: 1 }}>
+              {agentId}
+            </Text>
+            <Text role="sub" ink={3}>
+              Copy
+            </Text>
+          </View>
+        </Touchable>
         <Dropdown
           label="Notification default"
           value={agentNotifSetting}
@@ -823,6 +841,17 @@ export default function ConversationsScreen() {
                 ) : null}
                 <Touchable
                   accessibilityRole="button"
+                  accessibilityLabel={`Copy conversation ID for ${actionTarget.title}`}
+                  onPress={() => {
+                    void copyToClipboard(actionTarget.id);
+                    actionsSheetRef.current?.dismiss();
+                  }}
+                  style={styles.actionRow}
+                >
+                  <Text role="body">Copy conversation ID</Text>
+                </Touchable>
+                <Touchable
+                  accessibilityRole="button"
                   accessibilityLabel={`Rename ${actionTarget.title}`}
                   onPress={() => {
                     actionsSheetRef.current?.dismiss();
@@ -857,6 +886,9 @@ export default function ConversationsScreen() {
 }
 
 const styles = StyleSheet.create({
+  idRow: { paddingVertical: 10 },
+  idRowInner: { flexDirection: "row", alignItems: "center", gap: 8 },
+  idLabel: { width: 110 },
   headerAvatar: { width: 44, height: 44, borderRadius: 999 },
   actionRow: { paddingVertical: 14 },
   runningRow: { flexDirection: "row", alignItems: "center", gap: 8 },

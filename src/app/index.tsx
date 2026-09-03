@@ -18,7 +18,7 @@ import { Text } from "../components/ui/Text";
 import { Touchable } from "../components/ui/Touchable";
 import { useProfiles } from "../lib/profiles/ProfilesContext";
 import { loadPinned, PINNED_PROFILES_KEY, togglePinned } from "../lib/favorites";
-import { checkForUpdate, downloadUpdate, type UpdateInfo } from "../lib/updateCheck";
+import { checkForUpdate, downloadUpdate, localVersion, type UpdateInfo } from "../lib/updateCheck";
 import { Bloop } from "../components/ui/Bloop";
 import {
   NotificationMode,
@@ -89,12 +89,24 @@ export default function ConnectScreen() {
   const { colors } = theme;
   const [pinnedProfiles, setPinnedProfiles] = useState<Set<string>>(new Set());
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [upToDate, setUpToDate] = useState(false);
   useEffect(() => {
     void loadPinned(PINNED_PROFILES_KEY).then(setPinnedProfiles);
     // Side-loaded builds have no store — check the fork's latest release and
     // surface a banner when the installed APK is behind.
     void checkForUpdate().then(setUpdate);
   }, []);
+  const manualCheck = () => {
+    setChecking(true);
+    setUpToDate(false);
+    void checkForUpdate(true)
+      .then((u) => {
+        setUpdate(u);
+        if (!u) setUpToDate(true);
+      })
+      .finally(() => setChecking(false));
+  };
 
   const { profiles, activeProfile, setActive } = useProfiles();
 
@@ -224,6 +236,24 @@ export default function ConnectScreen() {
       </ScrollView>
 
       <Sheet ref={settingsRef} title="App defaults" scroll>
+        <View style={styles.versionRow}>
+          <Text role="sub" ink={3}>
+            Agents Chat v{localVersion()}
+          </Text>
+          {update ? (
+            <Touchable accessibilityRole="button" accessibilityLabel="Download update" onPress={() => void downloadUpdate(update)} style={styles.versionAction}>
+              <Text role="sub" tone="accent">
+                ⬆ v{update.version} — Download
+              </Text>
+            </Touchable>
+          ) : (
+            <Touchable accessibilityRole="button" accessibilityLabel="Check for updates" onPress={manualCheck} style={styles.versionAction}>
+              <Text role="sub" tone="accent">
+                {checking ? "Checking…" : upToDate ? "Up to date ✓" : "Check for updates"}
+              </Text>
+            </Touchable>
+          )}
+        </View>
         <Dropdown
           label="Permission mode"
           value={defaultPerm}
@@ -354,6 +384,13 @@ export default function ConnectScreen() {
 }
 
 const styles = StyleSheet.create({
+  versionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: space.sm,
+  },
+  versionAction: { paddingHorizontal: space.sm },
   themeGrid: { flexDirection: "row", flexWrap: "wrap", gap: space.sm, paddingVertical: space.sm },
   themeSwatch: {
     borderRadius: radius.row,

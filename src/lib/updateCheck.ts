@@ -29,7 +29,7 @@ export interface UpdateInfo {
   notes?: string;
 }
 
-function localVersion(): string {
+export function localVersion(): string {
   //expo-application is the reliable native read; constants as fallback.
   try {
     // Lazy require: keeps this module importable in tests without native modules.

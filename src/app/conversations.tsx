@@ -98,6 +98,8 @@ export default function ConversationsScreen() {
   const { activeProfile } = useProfiles();
 
   const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
+  const actionsSheetRef = useRef<BottomSheetModal>(null);
+  const [actionTarget, setActionTarget] = useState<ConversationSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -218,15 +220,8 @@ export default function ConversationsScreen() {
   };
 
   const showActions = (conversation: ConversationSummary) => {
-    const deletable = activeProfile ? canDeleteConversations({ profile: activeProfile, secret: "" }) : false;
-    Alert.alert(conversation.title, undefined, [
-      { text: "Rename", onPress: () => openRename(conversation) },
-      // Remote app-servers have no delete command — don't offer what can't work.
-      ...(deletable
-        ? [{ text: "Delete", style: "destructive" as const, onPress: () => confirmDelete(conversation) }]
-        : []),
-      { text: "Cancel", style: "cancel" as const },
-    ]);
+    setActionTarget(conversation);
+    actionsSheetRef.current?.present();
   };
 
   const filtered = (conversations ?? []).filter((c) =>
@@ -296,7 +291,11 @@ export default function ConversationsScreen() {
               <Text role="sub" ink={3} style={styles.footer}>
                 Loading more…
               </Text>
-            ) : null
+            ) : (
+              <Text role="sub" ink={3} style={styles.footer}>
+                Long-press a conversation for actions.
+              </Text>
+            )
           }
           ListEmptyComponent={
             error ? (
@@ -335,11 +334,55 @@ export default function ConversationsScreen() {
           </Text>
         </Touchable>
       </Sheet>
+      <Sheet
+        ref={actionsSheetRef}
+        title={actionTarget?.title ?? "Actions"}
+        onSheetDismiss={() => setActionTarget(null)}
+      >
+        {actionTarget ? (
+          (() => {
+            const deletable = activeProfile
+              ? canDeleteConversations({ profile: activeProfile, secret: "" })
+              : false;
+            return (
+              <>
+                <Touchable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Rename ${actionTarget.title}`}
+                  onPress={() => {
+                    actionsSheetRef.current?.dismiss();
+                    openRename(actionTarget);
+                  }}
+                  style={styles.actionRow}
+                >
+                  <Text role="body">Rename</Text>
+                </Touchable>
+                {deletable ? (
+                  <Touchable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Delete ${actionTarget.title}`}
+                    onPress={() => {
+                      actionsSheetRef.current?.dismiss();
+                      confirmDelete(actionTarget);
+                    }}
+                    style={styles.actionRow}
+                  >
+                    <Text role="body" tone="danger">
+                      Delete
+                    </Text>
+                  </Touchable>
+                ) : null}
+              </>
+            );
+          })()
+        ) : null}
+      </Sheet>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  actionRow: { paddingVertical: 14 },
   list: { paddingBottom: space.xxl, flexGrow: 1 },
   row: { paddingHorizontal: space.gutter },
   rowInner: { flexDirection: "row", alignItems: "center", paddingVertical: 14 },

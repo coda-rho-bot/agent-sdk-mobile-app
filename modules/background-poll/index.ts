@@ -32,6 +32,7 @@ declare class BackgroundPollNativeModule {
   }): Promise<void>;
   stopPolling(): Promise<void>;
   setVisibleConversation(conversationId: string | null): Promise<void>;
+  clearConversationNotifications(conversationId: string): Promise<void>;
 }
 
 const native = requireNativeModule<BackgroundPollNativeModule>("BackgroundPoll");
@@ -56,4 +57,9 @@ export function stopPolling(): Promise<void> {
 /** Suppress notifications for the conversation currently on screen. */
 export function setVisibleConversation(conversationId: string | null): Promise<void> {
   return native.setVisibleConversation(conversationId);
+}
+
+/** Clear posted notifications for a conversation (user opened it). */
+export function clearConversationNotifications(conversationId: string): Promise<void> {
+  return native.clearConversationNotifications(conversationId);
 }

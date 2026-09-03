@@ -9,6 +9,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
@@ -534,6 +535,11 @@ class BackgroundPollService : Service() {
         visibleUntil[previous] = System.currentTimeMillis()
       }
       visibleConversationId = conversationId
+    }
+
+    /** Cancel posted notifications for a conversation (user opened it). */
+    fun clearConversationNotifications(context: android.content.Context, conversationId: String) {
+      NotificationManagerCompat.from(context).cancel(conversationId.hashCode())
     }
     const val FGS_NOTIFICATION_ID = 93001
     const val FGS_CHANNEL_ID = "background_polling"

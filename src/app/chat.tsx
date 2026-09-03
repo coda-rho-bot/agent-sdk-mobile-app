@@ -49,7 +49,7 @@ import { Text } from "../components/ui/Text";
 import { Touchable } from "../components/ui/Touchable";
 import { haptic } from "../lib/haptics";
 import { ChatSession } from "../lib/letta/ChatSession";
-import { setVisibleConversation } from "../../modules/background-poll";
+import { clearConversationNotifications, setVisibleConversation } from "../../modules/background-poll";
 import { isNativelyWatched } from "../lib/backgroundPolling";
 
 import {

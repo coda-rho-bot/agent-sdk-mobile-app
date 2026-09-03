@@ -38,6 +38,14 @@ class BackgroundPollModule : Module() {
       BackgroundPollService.reportVisibleConversation(conversationId)
     }
 
+    // Clear any posted notifications for a conversation the user just opened
+    // (they're about to see everything live — the card is stale).
+    AsyncFunction("clearConversationNotifications") { conversationId: String ->
+      appContext.reactContext?.let {
+        BackgroundPollService.clearConversationNotifications(it, conversationId)
+      }
+    }
+
     AsyncFunction("stopPolling") {
       val context = appContext.reactContext
       context?.stopService(Intent(context, BackgroundPollService::class.java))

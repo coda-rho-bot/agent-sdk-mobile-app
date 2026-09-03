@@ -21,7 +21,7 @@ import { createTranscriptAccumulator } from "@letta-ai/letta-agent-sdk/client";
 
 import { toImageContent, type Attachment } from "./attachments";
 import type { Profile } from "../profiles/profiles";
-import { getConversationModel, isAuthError, listConversationMessages, listConversationRuns, sdkClient } from "./api";
+import { getConversationModel, isAuthError, listComputers, listConversationMessages, listConversationRuns, sdkClient } from "./api";
 import { ExternalTranscriptStore } from "./ExternalTranscriptStore";
 import { emptyChat, type ApprovalRequest, type ChatSnapshot, type PermissionMode, type ToolStatus, type TranscriptItem } from "./model";
 import { patch } from "./mockSession";
@@ -238,19 +238,41 @@ export class ChatSession {
     return chat;
   }
 
+  /**
+   * Resolve a stored device id to its current online connection lease.
+   * Returns null when the device is offline or unknown — the session then
+   * falls back to the managed sandbox rather than failing to route.
+   */
+  private async resolveComputerLease(deviceId: string): Promise<string | null> {
+    try {
+      const computers = await listComputers({ profile: this.conn.profile, secret: this.conn.secret });
+      return computers.find((c) => c.deviceId === deviceId)?.connectionId ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Create the SDK session on demand and start consuming its stream. */
-  private ensureSession(): LettaCodeSession {
+  private async ensureSession(): Promise<LettaCodeSession> {
     if (this.session) return this.session;
     const client = sdkClient(this.conn);
     // Cloud sessions route to the profile's selected computer when one is
     // set; otherwise the SDK provisions a managed sandbox (its default).
-    // Strip the display-only `name` field — the SDK's ComputerSelector type
-    // doesn't have a { connectionId, name } variant.
+    // The stored selector is a DEVICE id (stable across remote restarts) —
+    // resolve it to the device's CURRENT connection lease at attach time.
+    // Legacy profiles may still hold a raw connectionId lease (pre-deviceId
+    // format); those pass through as-is.
     const raw = this.conn.profile.computerSelector;
-    const computer =
-      raw && typeof raw === "object" && "connectionId" in raw
-        ? { connectionId: raw.connectionId }
-        : raw;
+    let computer: { connectionId: string } | undefined;
+    if (raw && typeof raw === "object" && "deviceId" in raw) {
+      // Preferred: resolve the stable device id to its CURRENT lease; if the
+      // device is briefly offline, fall back to the stored lease.
+      const storedLease = "connectionId" in raw ? String(raw.connectionId) : undefined;
+      const lease = (await this.resolveComputerLease(String(raw.deviceId))) ?? storedLease ?? null;
+      computer = lease ? { connectionId: lease } : undefined;
+    } else if (raw && typeof raw === "object" && "connectionId" in raw) {
+      computer = { connectionId: raw.connectionId };
+    }
     this.session = client.resumeSession(this.conversationId, {
       ...(computer ? { computer } : {}),
       // Tool approvals surface as an ApprovalRequest in the snapshot; the
@@ -278,7 +300,7 @@ export class ChatSession {
    * but the user hasn't sent anything from this device yet.
    */
   warmup(): void {
-    this.ensureSession();
+    void this.ensureSession();
     void this.session?.getDeviceStatus().catch(() => {
       // Connection state already surfaces through the session's own paths.
     });
@@ -325,7 +347,7 @@ export class ChatSession {
     try {
       // The SDK takes either a string or a multimodal content array; images
       // lead so the model reads them as context for the instruction.
-      await this.ensureSession().send(
+      await (await this.ensureSession()).send(
         attachments.length > 0
           ? [...toImageContent(attachments), ...(text ? [{ type: "text" as const, text }] : [])]
           : text,
@@ -554,7 +576,7 @@ export class ChatSession {
 
   /** Change the conversation model/effort through the session (first-class SDK API). */
   async setModel(model: string, reasoningEffort?: string): Promise<void> {
-    await this.ensureSession().updateModel({
+    await (await this.ensureSession()).updateModel({
       modelHandle: model,
       ...(reasoningEffort ? { reasoningEffort: reasoningEffort as never } : {}),
     });
@@ -567,7 +589,7 @@ export class ChatSession {
     // Safety: if the server never confirms our mode (e.g. silent failure),
     // clear the flag after 5s so device status updates resume normally.
     setTimeout(() => { this.permRestoreInFlight = false; }, 5000);
-    await this.ensureSession().changeDeviceState({ permissionMode: mode });
+    await (await this.ensureSession()).changeDeviceState({ permissionMode: mode });
     // The authoritative value lands via the next device-status update; show
     // the pending value immediately so the sheet feels responsive.
     this.commit(
@@ -1076,7 +1098,7 @@ export class ChatSession {
     // the first paint stays cheap and older pages arrive on scroll.
     const limit = 50;
     if (this.conn.profile.type === "remote") {
-      const result = await this.ensureSession().listMessages({ limit, ...(before ? { before } : {}) });
+      const result = await (await this.ensureSession()).listMessages({ limit, ...(before ? { before } : {}) });
       const messages = result.messages.slice().reverse();
       const oldestId = (messages[0] as { id?: string } | undefined)?.id ?? null;
       const full = result.messages.length >= limit;

@@ -19,7 +19,7 @@ interface Props {
   computers: ComputerSummary[];
   /** Currently selected connectionId, or null for cloud sandbox. */
   selectedConnectionId: string | null;
-  onSelect: (connectionId: string | null, name: string | null) => void;
+  onSelect: (connectionId: string | null, name: string | null, deviceId?: string) => void;
   loading?: boolean;
   error?: string | null;
 }
@@ -31,9 +31,9 @@ export const EnvironmentSheet = forwardRef<BottomSheetModal, Props>(function Env
   const { colors } = useTheme();
   const [dismissing, setDismissing] = useState(false);
 
-  const handleSelect = (connectionId: string | null, name: string | null) => {
+  const handleSelect = (connectionId: string | null, name: string | null, deviceId?: string) => {
     setDismissing(true);
-    onSelect(connectionId, name);
+    onSelect(connectionId, name, deviceId);
     (ref as React.RefObject<BottomSheetModal>)?.current?.dismiss();
     setDismissing(false);
   };
@@ -99,7 +99,7 @@ export const EnvironmentSheet = forwardRef<BottomSheetModal, Props>(function Env
                 key={c.connectionId}
                 accessibilityRole="button"
                 accessibilityLabel={`${c.name}${selected ? ", selected" : ""}`}
-                onPress={() => handleSelect(c.connectionId, c.name)}
+                onPress={() => handleSelect(c.connectionId, c.name, c.deviceId)}
                 disabled={dismissing}
                 style={styles.row}
               >

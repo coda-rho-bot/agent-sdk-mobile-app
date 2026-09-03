@@ -24,7 +24,15 @@ export type CloudAuthMethod = "oauth" | "api_key";
  * SDK's `ComputerSelector` — a string name, or an object with
  * deviceId/id/connectionId. When absent, the SDK provisions a managed sandbox.
  */
-export type ComputerSelectorField = string | { name: string } | { deviceId: string } | { id: string } | { connectionId: string; name?: string };
+export type ComputerSelectorField =
+  | string
+  | { name: string }
+  | { deviceId: string }
+  | { id: string }
+  | { connectionId: string; name?: string }
+  /** Preferred: stable device identity + display name; the connection lease
+   *  is resolved at session-attach time (leases change on remote restarts). */
+  | { deviceId: string; connectionId: string; name?: string };
 
 export interface Profile {
   id: string;

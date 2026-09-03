@@ -600,12 +600,18 @@ export default function ChatScreen() {
   }, [activeProfile, computers.length]);
 
   const selectEnvironment = useCallback(
-    async (connectionId: string | null, name: string | null) => {
+    async (connectionId: string | null, name: string | null, deviceId?: string) => {
       if (!activeProfile) return;
       const secret = await getSecret(activeProfile.id);
+      // Store the DEVICE id (stable across remote restarts) — the session
+      // resolves it to the current connection lease at attach time. Storing
+      // the connectionId lease was the "selection breaks after restart" bug.
       const updated: typeof activeProfile = {
         ...activeProfile,
-        computerSelector: connectionId ? { connectionId, name: name ?? undefined } : undefined,
+        computerSelector:
+          deviceId && connectionId
+            ? { deviceId, connectionId, name: name ?? undefined }
+            : undefined,
       };
       await saveProfile(updated, secret);
       // Refresh the in-memory profile context so the chip and session
@@ -627,9 +633,11 @@ export default function ChatScreen() {
       ? activeProfile.computerSelector
       : "name" in activeProfile.computerSelector && activeProfile.computerSelector.name
         ? activeProfile.computerSelector.name
-        : "connectionId" in activeProfile.computerSelector
-          ? activeProfile.computerSelector.connectionId.slice(0, 8)
-          : "env"
+        : "deviceId" in activeProfile.computerSelector
+          ? activeProfile.computerSelector.deviceId.slice(0, 8)
+          : "connectionId" in activeProfile.computerSelector
+            ? activeProfile.computerSelector.connectionId.slice(0, 8)
+            : "env"
     : null;
 
   const running = snapshot.run === "running" || snapshot.run === "awaiting_approval";

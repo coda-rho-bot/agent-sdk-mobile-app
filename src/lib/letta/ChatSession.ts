@@ -145,6 +145,8 @@ export class ChatSession {
    * once the server confirms it back.
    */
   private permRestoreInFlight = false;
+  /** Correlation tag for [PERM] diagnostic logs (which session instance logged). */
+  private readonly permLogTag: string = Math.random().toString(36).slice(2, 6);
   private approvalResolvers = new Map<
     string,
     (response: { behavior: "allow" } | { behavior: "deny"; message: string }) => void
@@ -559,7 +561,8 @@ export class ChatSession {
   }
 
   /** Change the runtime permission mode (SDK 0.3.0 #208 write, 0.3.1 #212 read). */
-  async setPermissionMode(mode: PermissionMode): Promise<void> {
+  async setPermissionMode(mode: PermissionMode, reason = "unspecified"): Promise<void> {
+    console.log(`[PERM] ${this.permLogTag} SET ${this.conversationId.slice(-8)} -> ${mode} (from ${this.snapshot.device?.permissionMode ?? "none"}) reason=${reason}`);
     this.permRestoreInFlight = true;
     // Safety: if the server never confirms our mode (e.g. silent failure),
     // clear the flag after 5s so device status updates resume normally.
@@ -590,7 +593,7 @@ export class ChatSession {
     // Save the user's selection (concrete or marker) per-conversation.
     await saveConversationPerm(this.conversationId, mode);
     if (isConcretePerm(mode)) {
-      await this.setPermissionMode(toSdkPermissionMode(mode));
+      await this.setPermissionMode(toSdkPermissionMode(mode), "cascade-concrete");
     } else {
       // Resolve the effective mode and push that to the server.
       const resolved = await resolveEffectivePermission(
@@ -598,7 +601,7 @@ export class ChatSession {
         this.agentId,
         this.conn.profile.id,
       );
-      await this.setPermissionMode(toSdkPermissionMode(resolved));
+      await this.setPermissionMode(toSdkPermissionMode(resolved), "cascade-resolved");
     }
   }
 
@@ -618,6 +621,7 @@ export class ChatSession {
     // Restore the user's saved permission mode for this conversation, or the
     // app-wide default. Cloud sandboxes start at "standard" every time; this
     // re-applies the user's choice so it survives across reopens.
+    console.log(`[PERM] ${this.permLogTag} ATTACH ${this.conversationId.slice(-8)} — session attached, restoring saved mode`);
     void this.restorePermissionMode();
   }
 
@@ -634,6 +638,7 @@ export class ChatSession {
         this.conn.profile.id,
       );
       const mode = toSdkPermissionMode(resolved);
+      console.log(`[PERM] ${this.permLogTag} SNAPSHOT-RESTORE ${this.conversationId.slice(-8)} mode=${mode} (display only, no server push)`);
       this.commit(
         patch(this.snapshot, {
           device: {
@@ -662,8 +667,9 @@ export class ChatSession {
       );
       // Only push to the server if the resolved mode is a concrete value
       // (not an inheritance marker — those should have been resolved already).
+      console.log(`[PERM] ${this.permLogTag} RESTORE ${this.conversationId.slice(-8)} resolved=${resolved} push=${isConcretePerm(resolved)}`);
       if (isConcretePerm(resolved)) {
-        await this.setPermissionMode(toSdkPermissionMode(resolved));
+        await this.setPermissionMode(toSdkPermissionMode(resolved), "restore-on-attach");
       }
     } catch {
       // Best-effort: if AsyncStorage fails the server default ("standard") stands.
@@ -811,6 +817,10 @@ export class ChatSession {
     // server status clobber it — the changeDeviceState call is still in
     // flight. Once the server confirms our mode, clear the flag.
     const serverMode = status.permissionMode as PermissionMode;
+    const prevMode = snapshot.device?.permissionMode;
+    if (serverMode !== prevMode) {
+      console.log(`[PERM] ${this.permLogTag} OBSERVE ${this.conversationId.slice(-8)} server=${serverMode} prev=${prevMode ?? "none"} restoreInFlight=${this.permRestoreInFlight}`);
+    }
     if (this.permRestoreInFlight) {
       // Keep our restored value until the server echoes it back.
       const ourMode = this.snapshot.device?.permissionMode;

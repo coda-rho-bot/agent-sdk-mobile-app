@@ -990,6 +990,7 @@ export default function ChatScreen() {
           }
           onSelect={(option) => {
             setPermSetting(option);
+            console.log(`[PERM] UI user selected ${option} in conversation ${String(params.conversationId).slice(-8)}`);
             void sessionRef.current?.setCascadePermission(option).then(() => {
               void resolveEffectivePermission(
                 params.conversationId,

@@ -35,6 +35,7 @@ import {
   resetAllAppDownstream,
 } from "../lib/permissions";
 import { useTheme } from "../theme/ThemeProvider";
+import { themeCatalog, themeNames } from "../theme/catalog";
 import { brandMark, radius, space } from "../theme/tokens";
 
 /**
@@ -84,7 +85,8 @@ function ModeCard({
 }
 
 export default function ConnectScreen() {
-  const { colors } = useTheme();
+  const theme = useTheme();
+  const { colors } = theme;
   const [pinnedProfiles, setPinnedProfiles] = useState<Set<string>>(new Set());
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   useEffect(() => {
@@ -284,6 +286,42 @@ export default function ConnectScreen() {
         <Text role="sub" ink={3} style={styles.permHint}>
           App-wide default for notifications. Servers, agents, and conversations inherit this unless overridden.
         </Text>
+        <View style={styles.sectionDivider} />
+
+        <Text role="sub" ink={3}>
+          Theme
+        </Text>
+        <View style={styles.themeGrid}>
+          {Object.keys(themeCatalog)
+            .sort((a, b) => (a === "angus" ? -1 : b === "angus" ? 1 : a.localeCompare(b)))
+            .map((id) => {
+              const entry = themeCatalog[id]!;
+              const p = entry[theme.name] ?? entry.light ?? entry.dark!;
+              const selected = theme.themeId === id;
+              return (
+                <Touchable
+                  key={id}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${themeNames[id] ?? id}${selected ? ". Selected" : ""}`}
+                  onPress={() => theme.setThemeId(id)}
+                  style={[
+                    styles.themeSwatch,
+                    { backgroundColor: p.surface, borderColor: selected ? p.accent : colors.surfaceEdge },
+                  ]}
+                >
+                  <View style={[styles.themeDots, { backgroundColor: p.bg }]}>
+                    <View style={[styles.themeDot, { backgroundColor: p.accent }]} />
+                    <View style={[styles.themeDot, { backgroundColor: p.ink }]} />
+                    <View style={[styles.themeDot, { backgroundColor: p.danger }]} />
+                  </View>
+                  <Text role="micro" ink={2} numberOfLines={1}>
+                    {themeNames[id] ?? id}
+                  </Text>
+                </Touchable>
+              );
+            })}
+        </View>
+
         <Touchable
           accessibilityRole="button"
           accessibilityLabel="Reset all downstream notification settings to app default"
@@ -316,6 +354,23 @@ export default function ConnectScreen() {
 }
 
 const styles = StyleSheet.create({
+  themeGrid: { flexDirection: "row", flexWrap: "wrap", gap: space.sm, paddingVertical: space.sm },
+  themeSwatch: {
+    borderRadius: radius.row,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: space.sm,
+    alignItems: "center",
+    gap: 6,
+    minWidth: 76,
+  },
+  themeDots: {
+    flexDirection: "row",
+    gap: 4,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  themeDot: { width: 12, height: 12, borderRadius: 999 },
   updateBanner: {
     borderRadius: radius.row,
     borderWidth: StyleSheet.hairlineWidth,

@@ -28,6 +28,7 @@ import {
   subscribeConversationActivity,
   type ConversationActivity,
 } from "../lib/letta/ChatSession";
+import { setStringAsync as copyToClipboard } from "expo-clipboard";
 import { getSecret } from "../lib/profiles/profiles";
 import { useProfiles } from "../lib/profiles/ProfilesContext";
 import { useTheme } from "../theme/ThemeProvider";
@@ -346,6 +347,17 @@ export default function ConversationsScreen() {
               : false;
             return (
               <>
+                <Touchable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Copy conversation ID for ${actionTarget.title}`}
+                  onPress={() => {
+                    void copyToClipboard(actionTarget.id);
+                    actionsSheetRef.current?.dismiss();
+                  }}
+                  style={styles.actionRow}
+                >
+                  <Text role="body">Copy conversation ID</Text>
+                </Touchable>
                 <Touchable
                   accessibilityRole="button"
                   accessibilityLabel={`Rename ${actionTarget.title}`}

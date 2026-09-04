@@ -468,8 +468,24 @@ export async function listConversationMessages(
 export async function getConversationModel(
   conn: Connection,
   conversationId: string,
+  agentId?: string,
 ): Promise<{ model: string | null; reasoningEffort: string | null; title: string | null }> {
   const body: LettaConversation = await sdkClient(conn).conversations.retrieve(conversationId);
+  // New conversations inherit the agent's model — the API returns null for
+  // both `model` and `model_settings` until something overrides them. Fall
+  // back to the agent record so the chip shows the real effective model.
+  if (body.model == null && agentId) {
+    const agent = await sdkClient(conn).agents.retrieve(agentId);
+    const a = agent.model_settings as {
+      reasoning_effort?: string | null;
+      effort?: string | null;
+    } | null;
+    return {
+      model: agent.model ?? null,
+      reasoningEffort: a?.reasoning_effort ?? a?.effort ?? null,
+      title: body.summary ?? null,
+    };
+  }
   // model_settings is an open record on the SDK type; narrow the fields we read.
   const s = body.model_settings as {
     reasoning_effort?: string | null;

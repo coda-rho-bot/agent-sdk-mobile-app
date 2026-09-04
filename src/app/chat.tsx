@@ -525,6 +525,7 @@ export default function ChatScreen() {
           current = await getConversationModel(
             { profile: activeProfile, secret: (await getSecret(activeProfile.id)) ?? "" },
             params.conversationId,
+            params.agentId,
           );
         }
         setModel(current.model);

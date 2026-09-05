@@ -1080,7 +1080,11 @@ export class ChatSession {
     try {
       const page = await this.fetchHistoryPage(this.nextBefore);
       this.nextBefore = page.nextBefore;
-      // Backfilled rows order ahead of live-only rows inside the accumulator.
+      // The external store renders history — older pages must land there.
+      // (Rebase into the accumulator alone rendered nothing: live projection
+      // only shows local-stream rows, so backfill was invisible — the
+      // "can't scroll up" regression after the ExternalTranscriptStore move.)
+      this.externalStore.upsert(page.messages as never);
       this.accumulator.rebase({ messages: page.messages as never }, { order: "asc" });
       this.commit(
         this.project(patch(this.snapshot, { hasMore: page.hasMore, loadingOlder: false })),

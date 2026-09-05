@@ -339,36 +339,76 @@ export default function ConnectScreen() {
             );
           })}
         </View>
-        <View style={styles.themeGrid}>
-          {Object.keys(themeCatalog)
-            .sort((a, b) => (a === "angus" ? -1 : b === "angus" ? 1 : a.localeCompare(b)))
-            .map((id) => {
-              const entry = themeCatalog[id]!;
-              const p = entry[theme.name] ?? entry.light ?? entry.dark!;
-              const selected = theme.themeId === id;
-              return (
-                <Touchable
-                  key={id}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${themeNames[id] ?? id}${selected ? ". Selected" : ""}`}
-                  onPress={() => theme.setThemeId(id)}
-                  style={[
-                    styles.themeSwatch,
-                    { backgroundColor: p.surface, borderColor: selected ? p.accent : colors.surfaceEdge },
-                  ]}
-                >
-                  <View style={[styles.themeDots, { backgroundColor: p.bg }]}>
-                    <View style={[styles.themeDot, { backgroundColor: p.accent }]} />
-                    <View style={[styles.themeDot, { backgroundColor: p.ink }]} />
-                    <View style={[styles.themeDot, { backgroundColor: p.danger }]} />
-                  </View>
-                  <Text role="micro" ink={2} numberOfLines={1}>
-                    {themeNames[id] ?? id}
-                  </Text>
-                </Touchable>
-              );
-            })}
-        </View>
+        {theme.modePref !== "dark" ? (
+          <View>
+            {theme.modePref === "system" ? <Text role="micro" ink={3}>Light mode theme</Text> : null}
+            <View style={styles.themeGrid}>
+              {Object.keys(themeCatalog)
+                .sort((a, b) => (a === "angus" ? -1 : b === "angus" ? 1 : a.localeCompare(b)))
+                .map((id) => {
+                  const entry = themeCatalog[id]!;
+                  const p = entry.light ?? entry.dark!;
+                  const selected = theme.lightThemeId === id;
+                  return (
+                    <Touchable
+                      key={id}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Light theme ${themeNames[id] ?? id}${selected ? ". Selected" : ""}`}
+                      onPress={() => theme.setLightThemeId(id)}
+                      style={[
+                        styles.themeSwatch,
+                        { backgroundColor: p.surface, borderColor: selected ? p.accent : colors.surfaceEdge },
+                      ]}
+                    >
+                      <View style={[styles.themeDots, { backgroundColor: p.bg }]}>
+                        <View style={[styles.themeDot, { backgroundColor: p.accent }]} />
+                        <View style={[styles.themeDot, { backgroundColor: p.ink }]} />
+                        <View style={[styles.themeDot, { backgroundColor: p.danger }]} />
+                      </View>
+                      <Text role="micro" ink={2} numberOfLines={1}>
+                        {themeNames[id] ?? id}
+                      </Text>
+                    </Touchable>
+                  );
+                })}
+            </View>
+          </View>
+        ) : null}
+        {theme.modePref !== "light" ? (
+          <View>
+            {theme.modePref === "system" ? <Text role="micro" ink={3}>Dark mode theme</Text> : null}
+            <View style={styles.themeGrid}>
+              {Object.keys(themeCatalog)
+                .sort((a, b) => (a === "angus" ? -1 : b === "angus" ? 1 : a.localeCompare(b)))
+                .map((id) => {
+                  const entry = themeCatalog[id]!;
+                  const p = entry.dark ?? entry.light!;
+                  const selected = theme.darkThemeId === id;
+                  return (
+                    <Touchable
+                      key={id}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Dark theme ${themeNames[id] ?? id}${selected ? ". Selected" : ""}`}
+                      onPress={() => theme.setDarkThemeId(id)}
+                      style={[
+                        styles.themeSwatch,
+                        { backgroundColor: p.surface, borderColor: selected ? p.accent : colors.surfaceEdge },
+                      ]}
+                    >
+                      <View style={[styles.themeDots, { backgroundColor: p.bg }]}>
+                        <View style={[styles.themeDot, { backgroundColor: p.accent }]} />
+                        <View style={[styles.themeDot, { backgroundColor: p.ink }]} />
+                        <View style={[styles.themeDot, { backgroundColor: p.danger }]} />
+                      </View>
+                      <Text role="micro" ink={2} numberOfLines={1}>
+                        {themeNames[id] ?? id}
+                      </Text>
+                    </Touchable>
+                  );
+                })}
+            </View>
+          </View>
+        ) : null}
 
         <Touchable
           accessibilityRole="button"

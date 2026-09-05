@@ -14,29 +14,40 @@ import { palettes, type Palette, type ThemeName } from "./tokens";
 
 const THEME_KEY = "letta.theme";
 const THEME_MODE_KEY = "letta.themeMode";
+const THEME_LIGHT_KEY = "letta.themeLight";
+const THEME_DARK_KEY = "letta.themeDark";
 
 /** User's mode preference — explicit light/dark, or follow the system. */
 export type ThemeModePref = "system" | "light" | "dark";
 
 interface Theme {
   name: ThemeName;
-  /** Selected catalog theme id ("angus", "nord", …). */
+  /** Theme selected for the light mode ("angus", "nord", …). */
+  lightThemeId: string;
+  /** Theme selected for the dark mode. */
+  darkThemeId: string;
+  /** The theme active for the CURRENT mode (convenience for consumers). */
   themeId: string;
   /** User's light/dark/system preference (persists). */
   modePref: ThemeModePref;
   colors: Palette;
-  /** Change the catalog theme (persists). */
-  setThemeId: (id: string) => void;
+  /** Change the light-mode theme (persists). */
+  setLightThemeId: (id: string) => void;
+  /** Change the dark-mode theme (persists). */
+  setDarkThemeId: (id: string) => void;
   /** Change the mode preference (persists). */
   setModePref: (mode: ThemeModePref) => void;
 }
 
 const ThemeContext = createContext<Theme>({
   name: "light",
+  lightThemeId: "angus",
+  darkThemeId: "angus",
   themeId: "angus",
   modePref: "system",
   colors: palettes.light,
-  setThemeId: () => {},
+  setLightThemeId: () => {},
+  setDarkThemeId: () => {},
   setModePref: () => {},
 });
 
@@ -60,24 +71,44 @@ export function ThemeProvider({
   force?: ThemeName;
 }) {
   const system = useColorScheme();
-  const [themeId, setThemeIdState] = useState("angus");
+  // Two theme selections — one per mode — mirroring the Angus theming
+  // library's ThemeSettings (lightColorTheme + darkColorTheme). In system
+  // mode the OS setting flips between the user's two picks.
+  const [lightThemeId, setLightThemeIdState] = useState("angus");
+  const [darkThemeId, setDarkThemeIdState] = useState("angus");
   const [modePref, setModePrefState] = useState<ThemeModePref>("system");
   const [loaded, setLoaded] = useState(false);
 
   // Load the persisted selections once.
   useEffect(() => {
-    void Promise.all([AsyncStorage.getItem(THEME_KEY), AsyncStorage.getItem(THEME_MODE_KEY)])
-      .then(([id, mode]) => {
-        if (id && themeCatalog[id]) setThemeIdState(id);
+    void Promise.all([
+      AsyncStorage.getItem(THEME_KEY),
+      AsyncStorage.getItem(THEME_LIGHT_KEY),
+      AsyncStorage.getItem(THEME_DARK_KEY),
+      AsyncStorage.getItem(THEME_MODE_KEY),
+    ])
+      .then(([legacyId, lightId, darkId, mode]) => {
+        // Migrate the single-selection era: seed both picks from it once.
+        if (legacyId && themeCatalog[legacyId]) {
+          if (!lightId && themeCatalog[legacyId]) setLightThemeIdState(legacyId);
+          if (!darkId && themeCatalog[legacyId]) setDarkThemeIdState(legacyId);
+        }
+        if (lightId && themeCatalog[lightId]) setLightThemeIdState(lightId);
+        if (darkId && themeCatalog[darkId]) setDarkThemeIdState(darkId);
         if (mode === "light" || mode === "dark" || mode === "system") setModePrefState(mode);
       })
       .catch(() => {})
       .finally(() => setLoaded(true));
   }, []);
 
-  const setThemeId = (id: string) => {
-    setThemeIdState(id);
-    void AsyncStorage.setItem(THEME_KEY, id).catch(() => {});
+  const setLightThemeId = (id: string) => {
+    setLightThemeIdState(id);
+    void AsyncStorage.setItem(THEME_LIGHT_KEY, id).catch(() => {});
+  };
+
+  const setDarkThemeId = (id: string) => {
+    setDarkThemeIdState(id);
+    void AsyncStorage.setItem(THEME_DARK_KEY, id).catch(() => {});
   };
 
   const setModePref = (mode: ThemeModePref) => {
@@ -87,9 +118,20 @@ export function ThemeProvider({
 
   // Explicit preference wins; system follows the OS setting.
   const name: ThemeName = force ?? (modePref === "system" ? (system === "dark" ? "dark" : "light") : modePref);
+  const activeId = name === "dark" ? darkThemeId : lightThemeId;
   const value = useMemo<Theme>(
-    () => ({ name, themeId, modePref, colors: resolveColors(themeId, name), setThemeId, setModePref }),
-    [name, themeId, modePref],
+    () => ({
+      name,
+      lightThemeId,
+      darkThemeId,
+      themeId: activeId,
+      modePref,
+      colors: resolveColors(activeId, name),
+      setLightThemeId,
+      setDarkThemeId,
+      setModePref,
+    }),
+    [name, lightThemeId, darkThemeId, modePref],
   );
   // Wait for the persisted theme before first paint so the app never flashes
   // the default palette when a custom theme is selected.

@@ -365,7 +365,7 @@ export default function ConnectScreen() {
                         <View style={[styles.themeDot, { backgroundColor: p.ink }]} />
                         <View style={[styles.themeDot, { backgroundColor: p.danger }]} />
                       </View>
-                      <Text role="micro" ink={2} numberOfLines={1}>
+                      <Text role="micro" numberOfLines={1} style={{ color: p.ink2 }}>
                         {themeNames[id] ?? id}
                       </Text>
                     </Touchable>
@@ -400,7 +400,7 @@ export default function ConnectScreen() {
                         <View style={[styles.themeDot, { backgroundColor: p.ink }]} />
                         <View style={[styles.themeDot, { backgroundColor: p.danger }]} />
                       </View>
-                      <Text role="micro" ink={2} numberOfLines={1}>
+                      <Text role="micro" numberOfLines={1} style={{ color: p.ink2 }}>
                         {themeNames[id] ?? id}
                       </Text>
                     </Touchable>

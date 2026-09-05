@@ -41,7 +41,7 @@ def to_palette(t: dict) -> dict:
     pressed = f"rgba({r},{g},{b},0.07)"
 
     surface = t.get("surfaceContainer") or t.get("surface") or "#FFFFFF"
-    return {
+    palette = {
         "bg": hex_norm(t.get("background", "#FBFBFA")),
         "surface": hex_norm(surface),
         "surfaceEdge": hex_norm(t.get("outlineVariant", "#E7E8E5")),
@@ -55,9 +55,72 @@ def to_palette(t: dict) -> dict:
         "bubble": hex_norm(t.get("surfaceContainerHigh") or t.get("surfaceContainer") or surface),
         "pressed": pressed,
     }
+    return audit_and_fix(palette)
 
 
 SLOT_ORDER = ["bg", "surface", "surfaceEdge", "ink", "ink2", "ink3", "accent", "run", "wait", "danger", "bubble", "pressed"]
+
+
+def _lum(v: str) -> float:
+    h = v.lstrip("#")
+    r, g, b = (int(h[i:i+2], 16) / 255 for i in (0, 2, 4))
+    def f(c):
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+
+
+def _contrast(a: str, b: str) -> float:
+    la, lb = _lum(a), _lum(b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _clamp(n: int) -> int:
+    return max(0, min(255, n))
+
+
+def _shift(v: str, delta: float) -> str:
+    """Shift a color toward white (delta>0) or black (delta<0) by a fraction of remaining range."""
+    h = v.lstrip("#")
+    r, g, b = (int(h[i:i+2], 16) for i in (0, 2, 4))
+    if delta >= 0:
+        r, g, b = (_clamp(round(c + (255 - c) * delta)) for c in (r, g, b))
+    else:
+        r, g, b = (_clamp(round(c * (1 + delta))) for c in (r, g, b))
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def ensure_contrast(fg: str, bg: str, min_ratio: float) -> str:
+    """Lighten or darken fg (toward whichever direction raises contrast vs bg)
+    until it meets min_ratio. Preserves hue direction; stops at extremes."""
+    if _contrast(fg, bg) >= min_ratio:
+        return fg
+    bg_lum = _lum(bg)
+    direction = 1.0 if bg_lum < 0.5 else -1.0  # text on dark -> lighten, on light -> darken
+    for step in range(1, 40):
+        cand = _shift(fg, direction * step * 0.04)
+        if _contrast(cand, bg) >= min_ratio:
+            return cand
+    return fg  # gave it everything; keep original rather than fail
+
+
+def audit_and_fix(palette: dict) -> dict:
+    """WCAG pass: text/semantic colors must read on their backgrounds.
+    ink/ink2: 4.5:1 on bg and surface; ink3/accent/run/wait/danger: 3:1 on bg
+    (ink3 is placeholder text, accent/danger are status words + words, not
+    body text); ink on bubble 4.5:1. Adjusted slots are noted in generation
+    so drift is visible."""
+    bg = palette["bg"]
+    fixed = dict(palette)
+    for slot, minr in (("ink", 4.5), ("ink2", 4.5), ("ink3", 3.0),
+                       ("accent", 3.0), ("run", 3.0), ("wait", 3.0), ("danger", 3.0)):
+        if fixed[slot].startswith("#"):
+            fixed[slot] = ensure_contrast(fixed[slot], bg, minr)
+    # ink must also read on surfaces it sits on
+    for surface_slot in ("surface", "bubble"):
+        if fixed["ink"].startswith("#") and fixed[surface_slot].startswith("#"):
+            fixed["ink"] = ensure_contrast(fixed["ink"], fixed[surface_slot], 4.5)
+    return fixed
 
 
 def main():

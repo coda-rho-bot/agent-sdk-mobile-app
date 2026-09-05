@@ -34,7 +34,7 @@ import {
   saveAppPermDefault,
   resetAllAppDownstream,
 } from "../lib/permissions";
-import { useTheme } from "../theme/ThemeProvider";
+import { useTheme, type ThemeModePref } from "../theme/ThemeProvider";
 import { themeCatalog, themeNames } from "../theme/catalog";
 import { brandMark, radius, space } from "../theme/tokens";
 
@@ -321,6 +321,24 @@ export default function ConnectScreen() {
         <Text role="sub" ink={3}>
           Theme
         </Text>
+        <View style={styles.modeRow}>
+          {(["system", "light", "dark"] as ThemeModePref[]).map((mode) => {
+            const selected = theme.modePref === mode;
+            return (
+              <Touchable
+                key={mode}
+                accessibilityRole="button"
+                accessibilityLabel={`${mode === "system" ? "Follow system" : mode} mode${selected ? ". Selected" : ""}`}
+                onPress={() => theme.setModePref(mode)}
+                style={[styles.modeChip, selected && { borderColor: colors.accent }]}
+              >
+                <Text role="sub" ink={selected ? 1 : 3}>
+                  {mode === "system" ? "Auto" : mode === "light" ? "Light" : "Dark"}
+                </Text>
+              </Touchable>
+            );
+          })}
+        </View>
         <View style={styles.themeGrid}>
           {Object.keys(themeCatalog)
             .sort((a, b) => (a === "angus" ? -1 : b === "angus" ? 1 : a.localeCompare(b)))
@@ -391,6 +409,13 @@ const styles = StyleSheet.create({
     paddingVertical: space.sm,
   },
   versionAction: { paddingHorizontal: space.sm },
+  modeRow: { flexDirection: "row", gap: space.sm, paddingVertical: space.xs },
+  modeChip: {
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: space.md,
+    paddingVertical: 6,
+  },
   themeGrid: { flexDirection: "row", flexWrap: "wrap", gap: space.sm, paddingVertical: space.sm },
   themeSwatch: {
     borderRadius: radius.row,

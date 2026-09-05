@@ -70,6 +70,7 @@ import {
 } from "../lib/notificationPoster";
 import { setStringAsync as copyToClipboard } from "expo-clipboard";
 import {
+  renameConversation,
   getConversationModel,
   isAuthError,
   listComputers,
@@ -147,6 +148,53 @@ function statusFor(
   if (run === "aborting") return { label: "Stopping…", tone: "wait" };
   if (run === "awaiting_approval") return { label: "Waiting for you", tone: "wait" };
   return { label: "Connected", tone: "run" };
+}
+
+/** Inline rename field for the conversation title. */
+function RenameRow({
+  initial,
+  onSubmit,
+}: {
+  initial: string;
+  onSubmit: (title: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const dirty = draft.trim().length > 0 && draft.trim() !== initial;
+  return (
+    <View style={styles.renameRow}>
+      <TextInput
+        value={draft}
+        onChangeText={setDraft}
+        placeholder="Conversation title"
+        placeholderTextColor={"#8B9096"}
+        style={{ flex: 1, color: undefined }}
+        returnKeyType="done"
+        onSubmitEditing={() => {
+          if (dirty && !saving) {
+            setSaving(true);
+            void onSubmit(draft.trim()).finally(() => setSaving(false));
+          }
+        }}
+      />
+      <Touchable
+        accessibilityRole="button"
+        accessibilityLabel="Rename conversation"
+        disabled={!dirty || saving}
+        onPress={() => {
+          if (dirty && !saving) {
+            setSaving(true);
+            void onSubmit(draft.trim()).finally(() => setSaving(false));
+          }
+        }}
+        style={styles.renameBtn}
+      >
+        <Text role="sub" tone={dirty && !saving ? "accent" : undefined} ink={dirty && !saving ? undefined : 3}>
+          {saving ? "Saving…" : "Rename"}
+        </Text>
+      </Touchable>
+    </View>
+  );
 }
 
 /** A settings row that copies its value on tap — "Copied" flashes in place. */
@@ -1008,6 +1056,15 @@ export default function ChatScreen() {
         }}
       />
       <Sheet ref={convSettingsRef} title="Conversation settings" scroll>
+        <RenameRow
+          initial={title}
+          onSubmit={async (t) => {
+            if (!activeProfile || !params.conversationId) return;
+            const secret = (await getSecret(activeProfile.id)) ?? "";
+            await renameConversation({ profile: activeProfile, secret }, params.conversationId, t);
+            setServerTitle(t);
+          }}
+        />
         <CopyIdRow label="Conversation ID" value={params.conversationId ?? "—"} />
         <CopyIdRow label="Agent ID" value={params.agentId ?? "—"} />
         <Dropdown
@@ -1145,6 +1202,16 @@ export default function ChatScreen() {
 }
 
 const styles = StyleSheet.create({
+  renameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(128,128,128,0.2)",
+    marginBottom: 6,
+  },
+  renameBtn: { paddingHorizontal: 8, paddingVertical: 4 },
   idRow: { paddingVertical: 10 },
   idRowInner: { flexDirection: "row", alignItems: "center", gap: 8 },
   idLabel: { width: 110 },

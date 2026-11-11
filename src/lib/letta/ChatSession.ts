@@ -25,6 +25,7 @@ import { getConversationModel, isAuthError, listConversationMessages, sdkClient 
 import { emptyChat, type ApprovalRequest, type ChatSnapshot, type PermissionMode, type ToolStatus, type TranscriptItem } from "./model";
 import { patch } from "./mockSession";
 import { contentToText, formatToolInput } from "./toolText";
+import { classifyResult, classifyStreamError } from "./terminal";
 import { newestTextKey, projectRows, type ProjectionState } from "./transcriptProjection";
 
 export type SnapshotListener = (snapshot: ChatSnapshot) => void;
@@ -896,6 +897,11 @@ export class ChatSession {
     });
   }
 
+  /** Contract-test seam: drives one SDK message through the reducer. */
+  reduceForTest(snapshot: ChatSnapshot, message: SDKMessage): ChatSnapshot {
+    return this.reduce(snapshot, message);
+  }
+
   private reduce(snapshot: ChatSnapshot, message: SDKMessage): ChatSnapshot {
     switch (message.type) {
       case "init":
@@ -944,18 +950,32 @@ export class ChatSession {
       }
 
       case "result": {
-        // An aborted turn completes as a result with stopReason "interrupted"
-        // and no settled assistant message, so the row it left behind is the
-        // only place "Stopped" can be shown.
+        // SDK 0.8.39 terminal doctrine (./terminal.ts): the result frame is
+        // the only authority on how the turn ended. stream_closed /
+        // recoverable results are transport loss — outcome unknown — so they
+        // settle WITHOUT an error row; the connection banner owns them.
+        const outcome = classifyResult(message);
         const interrupted = !message.success || message.stopReason === "interrupted";
         this.interruptedKey = interrupted ? newestTextKey(this.accumulator.rows()) : null;
         const idle = this.project(patch(snapshot, { run: "idle" }));
-        return message.success
-          ? idle
-          : this.appendError(idle, message.errorDetail ?? message.error ?? "The run failed.");
+        if (outcome.kind === "success") return idle;
+        if (outcome.kind === "stream_lost") {
+          // Connection state tells the story (the banner owns transport
+          // errors); nothing new to render on the transcript.
+          return patch(idle, { connection: "offline" });
+        }
+        return this.appendError(idle, outcome.detail);
       }
 
-      case "error":
+      case "error": {
+        // A stream_closed error frame is transport death, not run failure —
+        // classify before rendering (see ./terminal.ts).
+        const outcome = classifyStreamError(message);
+        if (outcome.kind === "stream_lost") {
+          // Transport loss mid-run (recoverable per the SDK): outcome
+          // unknown — surface via connection state, never as a failed run.
+          return patch(this.project(snapshot), { connection: "offline" });
+        }
         this.interruptedKey = newestTextKey(this.accumulator.rows());
         return this.appendError(
           this.project(snapshot),
@@ -966,6 +986,7 @@ export class ChatSession {
               ? `The server rejected the request (${(message as { code?: string }).code}).`
               : "Something went wrong on the server."),
         );
+      }
 
       case "retry":
       default:

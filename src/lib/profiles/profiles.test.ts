@@ -31,7 +31,14 @@ interface OAuthCredential {
   expiresAt: number;
 }
 
+// bun's mock.module is PROCESS-GLOBAL: this replacement is visible to every
+// later test file in the same run. Spread the REAL module's exports and
+// override only what this file exercises — downstream importers (ChatSession's
+// graph via api.ts, oauthTokens.test.ts) keep real behavior for the rest.
+const realOAuthTokens = await import("../auth/oauthTokens");
 mock.module("../auth/oauthTokens", () => ({
+  ...realOAuthTokens,
+  // Mocked behavior under test:
   parseOAuthCredential: (value: string): OAuthCredential | null => {
     const parsed = JSON.parse(value) as OAuthCredential;
     return parsed.kind === "oauth" ? parsed : null;

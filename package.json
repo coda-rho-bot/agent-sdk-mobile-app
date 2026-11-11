@@ -9,11 +9,11 @@
     "android": "expo run:android",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "test": "bun test src"
+    "test": "bun test src/lib/profiles/profiles.test.ts && bun test src/lib/letta src/lib/auth"
   },
   "dependencies": {
     "@gorhom/bottom-sheet": "^5.2.6",
-    "@letta-ai/letta-agent-sdk": "0.7.1",
+    "@letta-ai/letta-agent-sdk": "0.8.39",
     "@react-native-async-storage/async-storage": "~2.2.0",
     "expo": "~57.0.8",
     "expo-auth-session": "~57.0.7",

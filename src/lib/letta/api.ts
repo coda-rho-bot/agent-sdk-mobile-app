@@ -75,8 +75,34 @@ export function isAuthError(e: unknown): boolean {
   return /\b401\b|\b403\b|unauthori[sz]ed|forbidden|invalid (api key|token|credential)|invalid_grant|credentials/i.test(message);
 }
 
+// SDK 0.8.x clients hold a persistent management WebSocket (remote backend) —
+// constructing one per call site leaks a socket per call. Pool keyed by
+// (profile id, url, secret): OAuth rotation naturally rotates the key, and
+// evicted clients are closed (close() is idempotent in 0.8.39, never rejects).
+const clientCache = new Map<string, LettaAgentClient>();
+
+function cacheKey(conn: Connection): string {
+  return `${conn.profile.id}|${conn.profile.url}|${conn.secret}`;
+}
+
 /** The portable SDK client for the active connection. Used for createAgent and sessions. */
 export function sdkClient(conn: Connection): LettaAgentClient {
+  const key = cacheKey(conn);
+  const cached = clientCache.get(key);
+  if (cached) return cached;
+  const created = createSdkClient(conn);
+  // Evict stale entries for the same profile (rotated secret/URL).
+  for (const [existingKey, existing] of clientCache) {
+    if (existingKey.startsWith(`${conn.profile.id}|`) && existingKey !== key) {
+      clientCache.delete(existingKey);
+      void existing.close().catch(() => {});
+    }
+  }
+  clientCache.set(key, created);
+  return created;
+}
+
+function createSdkClient(conn: Connection): LettaAgentClient {
   if (conn.profile.type === "cloud") {
     return new LettaAgentClient({
       backend: "cloud",

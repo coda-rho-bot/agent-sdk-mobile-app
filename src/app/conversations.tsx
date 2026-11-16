@@ -259,6 +259,9 @@ export default function ConversationsScreen() {
     const index = chatMeta.pinned.indexOf(id);
     return index === -1 ? chatMeta.pinned.length : index;
   };
+  // Pinned rows sort by pin-recency (most recent pin first) — a deliberate
+  // divergence from the desktop client, which sorts pins by conversation
+  // recency. Choice, not bug: re-pinning is how you re-order on mobile.
   const filtered = [...visible].sort((a, b) => pinRank(a.id) - pinRank(b.id));
 
   return (

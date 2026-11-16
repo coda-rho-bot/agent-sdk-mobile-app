@@ -29,6 +29,7 @@ import {
   type ConversationActivity,
 } from "../lib/letta/ChatSession";
 import { getSecret } from "../lib/profiles/profiles";
+import { getChatMeta, markAllRead, markRead, togglePin, type ChatMeta } from "../lib/letta/chatMeta";
 import { useProfiles } from "../lib/profiles/ProfilesContext";
 import { useTheme } from "../theme/ThemeProvider";
 import { radius, space } from "../theme/tokens";
@@ -52,8 +53,10 @@ function useActivity(conversationId: string): ConversationActivity | null {
   return useSyncExternalStore(subscribeConversationActivity, read);
 }
 
-function ConversationRow({ conversation, onPress, onLongPress }: {
+function ConversationRow({ conversation, pinned, unread, onPress, onLongPress }: {
   conversation: ConversationSummary;
+  pinned: boolean;
+  unread: boolean;
   onPress: () => void;
   onLongPress: () => void;
 }) {
@@ -74,9 +77,17 @@ function ConversationRow({ conversation, onPress, onLongPress }: {
     >
       <View style={styles.rowInner}>
         <View style={styles.rowText}>
-          <Text role="bodyEm" numberOfLines={1}>
-            {conversation.title}
-          </Text>
+          <View style={styles.titleRow}>
+            {unread ? <View style={[styles.unreadDot, { backgroundColor: colors.accent }]} /> : null}
+            <Text role="bodyEm" numberOfLines={1}>
+              {conversation.title}
+            </Text>
+            {pinned ? (
+              <Text role="sub" tone="accent">
+                ★
+              </Text>
+            ) : null}
+          </View>
           <Text role="sub" ink={3}>
             {activityLabel ?? relativeTime(conversation.lastMessageAt)}
           </Text>
@@ -103,12 +114,14 @@ export default function ConversationsScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [search, setSearch] = useState("");
+  const [chatMeta, setChatMeta] = useState<ChatMeta>({ pinned: [], readCursors: {} });
   const renameSheetRef = useRef<BottomSheetModal>(null);
   const [renaming, setRenaming] = useState<ConversationSummary | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
 
   const load = useCallback(async () => {
     if (!activeProfile || !agentId) return;
+    void getChatMeta(activeProfile.id).then(setChatMeta);
     setError(null);
     try {
       const secret = (await getSecret(activeProfile.id)) ?? "";
@@ -157,6 +170,9 @@ export default function ConversationsScreen() {
   };
 
   const openChat = (conversation: ConversationSummary) => {
+    if (activeProfile && conversation.lastMessageAt) {
+      void markRead(activeProfile.id, conversation.id, new Date(conversation.lastMessageAt).getTime()).then(setChatMeta);
+    }
     router.push({
       pathname: "/chat",
       params: { conversationId: conversation.id, agentId, agentName, title: conversation.title },
@@ -219,7 +235,14 @@ export default function ConversationsScreen() {
 
   const showActions = (conversation: ConversationSummary) => {
     const deletable = activeProfile ? canDeleteConversations({ profile: activeProfile, secret: "" }) : false;
+    const pinned = chatMeta.pinned.includes(conversation.id);
     Alert.alert(conversation.title, undefined, [
+      {
+        text: pinned ? "Unpin" : "Pin to top",
+        onPress: () => {
+          if (activeProfile) void togglePin(activeProfile.id, conversation.id).then(setChatMeta);
+        },
+      },
       { text: "Rename", onPress: () => openRename(conversation) },
       // Remote app-servers have no delete command — don't offer what can't work.
       ...(deletable
@@ -229,9 +252,14 @@ export default function ConversationsScreen() {
     ]);
   };
 
-  const filtered = (conversations ?? []).filter((c) =>
+  const visible = (conversations ?? []).filter((c) =>
     c.title.toLowerCase().includes(search.trim().toLowerCase()),
   );
+  const pinRank = (id: string) => {
+    const index = chatMeta.pinned.indexOf(id);
+    return index === -1 ? chatMeta.pinned.length : index;
+  };
+  const filtered = [...visible].sort((a, b) => pinRank(a.id) - pinRank(b.id));
 
   return (
     <Screen>
@@ -254,6 +282,7 @@ export default function ConversationsScreen() {
       />
       {conversations !== null && conversations.length > 0 ? (
         <View style={styles.searchWrap}>
+          <View style={styles.metaRow}>
           <TextInput
             value={search}
             onChangeText={setSearch}
@@ -262,6 +291,28 @@ export default function ConversationsScreen() {
             autoCapitalize="none"
             style={[styles.search, { backgroundColor: colors.surface, borderColor: colors.surfaceEdge, color: colors.ink }]}
           />
+          {visible.some(
+            (c) => c.lastMessageAt !== undefined &&
+              (chatMeta.readCursors[c.id] ?? 0) < new Date(c.lastMessageAt).getTime(),
+          ) ? (
+            <Touchable
+              accessibilityRole="button"
+              accessibilityLabel="Mark all read"
+              onPress={() => {
+                if (!activeProfile || !conversations) return;
+                void markAllRead(
+                  activeProfile.id,
+                  conversations.map((c) => ({ id: c.id, seenAt: c.lastMessageAt ? new Date(c.lastMessageAt).getTime() : Date.now() })),
+                ).then(setChatMeta);
+              }}
+              style={styles.markAll}
+            >
+              <Text role="sub" tone="accent">
+                Mark all read
+              </Text>
+            </Touchable>
+          ) : null}
+          </View>
         </View>
       ) : null}
       {conversations === null ? (
@@ -273,6 +324,11 @@ export default function ConversationsScreen() {
           renderItem={({ item }) => (
             <ConversationRow
               conversation={item}
+              pinned={chatMeta.pinned.includes(item.id)}
+              unread={
+                item.lastMessageAt !== undefined &&
+                (chatMeta.readCursors[item.id] ?? 0) < new Date(item.lastMessageAt).getTime()
+              }
               onPress={() => openChat(item)}
               onLongPress={() => showActions(item)}
             />
@@ -342,6 +398,10 @@ export default function ConversationsScreen() {
 const styles = StyleSheet.create({
   list: { paddingBottom: space.xxl, flexGrow: 1 },
   row: { paddingHorizontal: space.gutter },
+  metaRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  markAll: { paddingHorizontal: 8, paddingVertical: 4 },
+  titleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  unreadDot: { width: 8, height: 8, borderRadius: 4 },
   rowInner: { flexDirection: "row", alignItems: "center", paddingVertical: 14 },
   rowText: { flex: 1, gap: 2 },
   divider: { height: StyleSheet.hairlineWidth },

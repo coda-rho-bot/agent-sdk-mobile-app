@@ -1,3 +1,4 @@
+import { authorizationCodeFromResult } from "@angus/letta-client-core";
 import {
   AuthRequest,
   CodeChallengeMethod,
@@ -11,10 +12,9 @@ import {
   getOAuthClientId,
   LETTA_OAUTH_BASE_URL,
   type OAuthCredential,
-} from "./oauthTokens";
-import { authorizationCodeFromResult } from "./oauthResult";
+} from "@angus/letta-client-core";
 
-export { OAuthCancelledError } from "./oauthResult";
+export { OAuthCancelledError } from "@angus/letta-client-core";
 
 WebBrowser.maybeCompleteAuthSession();
 

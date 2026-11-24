@@ -1,3 +1,7 @@
+> [!NOTE]
+> **You're looking at the `angus` branch — Agents Chat**, the Angus Software soft fork of Bloop with background notifications, per-conversation notification settings, cross-device sync, pinning, and more. Fork docs: [FORK.md](./FORK.md). Upstream PRs contributing pieces of this back: [#9](https://github.com/letta-ai/agent-sdk-mobile-app/pull/9) [#10](https://github.com/letta-ai/agent-sdk-mobile-app/pull/10) [#11](https://github.com/letta-ai/agent-sdk-mobile-app/pull/11) [#12](https://github.com/letta-ai/agent-sdk-mobile-app/pull/12).
+> The `main` branch is a pristine mirror of upstream.
+
 # Bloop — a mobile client for the Letta Agent SDK
 
 Chat with your Letta agents from your phone: pick an agent, watch it think, run tools,

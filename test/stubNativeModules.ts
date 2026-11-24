@@ -14,18 +14,6 @@ import type { PluginBuilder } from "bun";
 export const nativeStubsPlugin = {
   name: "stub-native-modules",
   setup(build: PluginBuilder): void {
-    // expo-auth-session: oauth.ts imports PKCE helpers at module scope; the
-    // real package reaches react-native (Flow syntax) through its peers.
-    // Minimal surface for import-time: usePKCE + a discovery stub.
-    build.module("expo-auth-session", () => ({
-      exports: {
-        usePKCE: (o?: { clientId?: string }) => ({ clientId: o?.clientId ?? null, challenge: null }),
-        makeRedirectUri: () => "com.letta.mobile:/oauth",
-        AuthSession: { getDefaultReturnUrl: () => "com.letta.mobile:/oauth" },
-        startAsync: async () => ({ type: "dismiss" as const }),
-      },
-      loader: "object" as const,
-    }));
     // expo-web-browser: only the module-scope maybeCompleteAuthSession() call
     // matters to importers under test; it is a no-op outside a browser window.
     build.module("expo-web-browser", () => ({

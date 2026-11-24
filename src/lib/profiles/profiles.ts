@@ -13,11 +13,21 @@ import {
   parseOAuthCredential,
   refreshOAuthCredential,
   revokeOAuthCredential,
+  type ComputerSelectorField,
   type OAuthCredential,
-} from "../auth/oauthTokens";
+} from "@angus/letta-client-core";
 
 export type ProfileType = "cloud" | "remote";
 export type CloudAuthMethod = "oauth" | "api_key";
+
+/**
+ * Selector for the computer where cloud sessions execute tools. Mirrors the
+ * SDK's `ComputerSelector` — a string name, or an object with
+ * deviceId/id/connectionId. When absent, the SDK provisions a managed sandbox.
+ */
+// ComputerSelectorField now lives in @angus/letta-client-core (env/selector.ts)
+// — re-exported so Profile's import surface stays stable.
+export type { ComputerSelectorField };
 
 export interface Profile {
   id: string;
@@ -27,6 +37,14 @@ export interface Profile {
   url: string;
   /** Existing Cloud profiles omit this field and remain API-key profiles. */
   authMethod?: CloudAuthMethod;
+  /**
+   * Cloud only: the account-level DEFAULT environment — what new
+   * conversations inherit until they pick their own (per-conversation
+   * overrides live in conversationEnv.ts). When absent, the SDK provisions
+   * a managed sandbox. Written by the env sheet's "Use for new
+   * conversations" checkbox.
+   */
+  computerSelector?: ComputerSelectorField;
   /** Result of the last "Test connection" run. */
   lastTest?: "ok" | "unauthorized" | "unreachable";
   createdAt: number;

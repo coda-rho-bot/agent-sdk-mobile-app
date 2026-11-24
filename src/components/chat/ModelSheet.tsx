@@ -18,7 +18,10 @@ import { Touchable } from "../ui/Touchable";
  * Effort tiers per provider family — derived-until-the-API-populates table
  * (reasoning_capabilities probed null across the catalog Nov 16; mirrors the
  * desktop client's store). Unknown provider = full list (the SDK validates
- * at send and the turn errors visibly if the tier is unsupported).
+ * the enum at send and the turn errors visibly if the tier is unsupported —
+ * but the SDK set is provider-blind, so per-provider gating stays ours).
+ * Restored from PR #6 (Uncia N1): an arriving effort outside the provider
+ * subset must not commit on the next model tap.
  */
 const PROVIDER_EFFORTS: Record<string, ReasoningEffort[]> = {
   zai: ["low", "medium", "high"],

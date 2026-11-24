@@ -20,7 +20,7 @@ import { Text } from "../ui/Text";
 import { Touchable } from "../ui/Touchable";
 import { Markdown, useCopyFeedback } from "./Markdown";
 import type { AssistantItem, ErrorItem, ReasoningItem, ToolItem, UserItem } from "../../lib/letta/model";
-import type { ToolGroupItem } from "../../lib/letta/grouping";
+import type { ToolGroupItem } from "@angus/letta-client-core";
 
 // ── User ────────────────────────────────────────────────────────────────────
 

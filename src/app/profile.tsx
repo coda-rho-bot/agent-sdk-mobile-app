@@ -2,9 +2,11 @@
  * Profile editor — Letta Cloud offers browser OAuth or an API key. Remote
  * app-servers keep their WebSocket URL + capability token flow.
  */
+import type { BottomSheetModal } from "@gorhom/bottom-sheet";
 import { router, useLocalSearchParams } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -15,6 +17,8 @@ import {
 
 import { Bloop } from "../components/ui/Bloop";
 import { Header, Screen } from "../components/ui/Screen";
+import { Dropdown } from "../components/ui/Dropdown";
+import { Sheet } from "../components/ui/Sheet";
 import { Text } from "../components/ui/Text";
 import { Touchable } from "../components/ui/Touchable";
 import { OAuthCancelledError, signInWithLetta } from "../lib/auth/oauth";
@@ -30,6 +34,41 @@ import {
   type ProfileType,
 } from "../lib/profiles/profiles";
 import { useProfiles } from "../lib/profiles/ProfilesContext";
+import {
+  NotificationMode,
+  labelWithResolution,
+  loadServerSetting,
+  saveServerSetting,
+  loadAppDefault,
+  resolveMode,
+  resetServerDownstreamNotifications,
+  loadAvatarShape,
+  saveAvatarShape,
+  type AvatarShape,
+} from "../lib/notifications";
+import * as Application from "expo-application";
+import * as Progress from "react-native-progress";
+import {
+  type PendingUpdate,
+  subscribePendingUpdate,
+  checkForUpdate,
+  downloadAndInstall,
+  loadUpdateToken,
+  saveUpdateToken,
+} from "../lib/updater";
+import {
+  PermissionCascadeMode,
+  type PermissionCascadeValue,
+  permLabelWithResolution,
+  permissionDetail,
+  loadServerPerm,
+  saveServerPerm,
+  loadAppPermDefault,
+  resolvePermission,
+  resetServerDownstreamPermissions,
+} from "../lib/permissions";
+import { listAgents } from "../lib/letta/api";
+import { getSecret } from "../lib/profiles/profiles";
 import { useTheme } from "../theme/ThemeProvider";
 import { brandMark, radius, space } from "../theme/tokens";
 
@@ -147,8 +186,58 @@ export default function ProfileEditorScreen() {
   const [message, setMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // Server-level settings sheet (only for existing profiles).
+  const serverSettingsRef = useRef<BottomSheetModal>(null);
+
+  // Notification avatar shape (global display preference, existing profiles sheet).
+  const [avatarShape, setAvatarShape] = useState<AvatarShape>("circle");
+
+  // App self-update state.
+  const [update, setUpdate] = useState<PendingUpdate | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [updateProgress, setUpdateProgress] = useState(0);
+  const [updateToken, setUpdateTokenState] = useState("");
+  const appVersion = Application.nativeApplicationVersion ?? "?";
+
+  // Server-level notification default (only for existing profiles).
+  const [serverNotif, setServerNotif] = useState<NotificationMode>(NotificationMode.APP_DEFAULT);
+  const [serverNotifResolved, setServerNotifResolved] = useState<NotificationMode>(NotificationMode.OFF);
+
+  // Server-level permission default (only for existing profiles).
+  const [serverPerm, setServerPerm] = useState<PermissionCascadeValue>(PermissionCascadeMode.APP_DEFAULT);
+  const [serverPermResolved, setServerPermResolved] = useState<PermissionCascadeValue>(PermissionCascadeMode.STANDARD);
+
   useEffect(() => {
     if (existing) void hasSecret(existing.id).then(setStoredSecret);
+    if (!existing) return;
+    let unsub: (() => void) | null = null;
+    let cancelled = false;
+    void (async () => {
+      const [serverNotifSetting, appNotifSetting, serverPermSetting, appPermSetting] = await Promise.all([
+        loadServerSetting(existing.id),
+        loadAppDefault(),
+        loadServerPerm(existing.id),
+        loadAppPermDefault(),
+      ]);
+      if (cancelled) return;
+      setServerNotif(serverNotifSetting);
+      setServerNotifResolved(resolveMode(NotificationMode.APP_DEFAULT, serverNotifSetting, appNotifSetting, appNotifSetting));
+      setServerPerm(serverPermSetting);
+      setServerPermResolved(resolvePermission(PermissionCascadeMode.APP_DEFAULT, PermissionCascadeMode.AGENT_DEFAULT, serverPermSetting, appPermSetting));
+      setAvatarShape(await loadAvatarShape());
+      setUpdateTokenState(await loadUpdateToken());
+      if (cancelled) return;
+      unsub = subscribePendingUpdate(setUpdate);
+      const check = await checkForUpdate().catch(() => null);
+      if (!cancelled && check?.updateAvailable) {
+        setUpdate({ version: check.manifest!.version, manifest: check.manifest! });
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unsub?.();
+    };
   }, [existing]);
 
   const storedSecretMatches =
@@ -249,7 +338,24 @@ export default function ProfileEditorScreen() {
 
   return (
     <Screen>
-      <Header title={type === "cloud" ? "Letta Cloud" : "Your own server"} back />
+      <Header
+        title={type === "cloud" ? "Letta Cloud" : "Your own server"}
+        back
+        trailing={
+          existing ? (
+            <Touchable
+              accessibilityLabel="Server settings"
+              accessibilityRole="button"
+              onPress={() => serverSettingsRef.current?.present()}
+              style={styles.gear}
+            >
+              <Text role="title" ink={2}>
+                ⚙
+              </Text>
+            </Touchable>
+          ) : undefined
+        }
+      />
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex}>
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           {type === "cloud" ? (
@@ -423,6 +529,213 @@ export default function ProfileEditorScreen() {
           )}
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {existing ? (
+        <Sheet ref={serverSettingsRef} title="Server settings" scroll>
+          <Dropdown
+            label="Notification default"
+            value={serverNotif}
+            options={
+              (
+                [
+                  NotificationMode.OFF,
+                  NotificationMode.MOBILE_ONLY,
+                  NotificationMode.ALL_MESSAGES,
+                  NotificationMode.APP_DEFAULT,
+                ] as NotificationMode[]
+              ).map((option) => ({
+                value: option,
+                label: labelWithResolution(option, serverNotifResolved),
+                danger: option === NotificationMode.OFF,
+              }))
+            }
+            onSelect={(option) => {
+              setServerNotif(option);
+              setServerNotifResolved(resolveMode(option, serverNotif, serverNotifResolved, serverNotifResolved));
+              void saveServerSetting(existing.id, option);
+            }}
+          />
+          <Text role="sub" ink={3} style={styles.permHint}>
+            Default for all agents on this connection. Individual agents and conversations can override.
+          </Text>
+          <Touchable
+            accessibilityRole="button"
+            accessibilityLabel="Reset all downstream notification settings to server default"
+            onPress={() =>
+              Alert.alert(
+                "Reset notifications?",
+                "Clears all agent and conversation notification overrides for this connection. They will inherit from the app default.",
+                [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Reset",
+                    style: "destructive",
+                    onPress: async () => {
+                      try {
+                        const secret = (await getSecret(existing.id)) ?? "";
+                        const agents = await listAgents({ profile: existing, secret });
+                        await resetServerDownstreamNotifications(agents.map((a) => a.id));
+                        Alert.alert("Done", "All notification overrides for this connection cleared.");
+                      } catch (e) {
+                        Alert.alert("Couldn't reset", e instanceof Error ? e.message : undefined);
+                      }
+                    },
+                  },
+                ],
+              )
+            }
+            style={styles.resetBtn}
+          >
+            <Text role="body" tone="danger">
+              Reset all downstream notifications
+            </Text>
+          </Touchable>
+
+          <View style={styles.sectionDivider} />
+
+          <Dropdown
+            label="Permission default"
+            value={serverPerm}
+            options={
+              (
+                [
+                  PermissionCascadeMode.STRICT,
+                  PermissionCascadeMode.STANDARD,
+                  PermissionCascadeMode.ACCEPT_EDITS,
+                  PermissionCascadeMode.UNRESTRICTED,
+                  PermissionCascadeMode.APP_DEFAULT,
+                ] as PermissionCascadeValue[]
+              ).map((option) => ({
+                value: option,
+                label: permLabelWithResolution(option, serverPermResolved),
+                detail: permissionDetail(option),
+                danger: option === PermissionCascadeMode.UNRESTRICTED,
+              }))
+            }
+            onSelect={(option) => {
+              setServerPerm(option);
+              setServerPermResolved(resolvePermission(option, PermissionCascadeMode.AGENT_DEFAULT, serverPerm, serverPermResolved));
+              void saveServerPerm(existing.id, option);
+            }}
+          />
+          <Text role="sub" ink={3} style={styles.permHint}>
+            Default for all agents on this connection. Individual agents and conversations can override.
+          </Text>
+          <Touchable
+            accessibilityRole="button"
+            accessibilityLabel="Reset all downstream permission settings to server default"
+            onPress={() =>
+              Alert.alert(
+                "Reset permissions?",
+                "Clears all agent and conversation permission overrides for this connection. They will inherit from the app default.",
+                [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Reset",
+                    style: "destructive",
+                    onPress: async () => {
+                      try {
+                        const secret = (await getSecret(existing.id)) ?? "";
+                        const agents = await listAgents({ profile: existing, secret });
+                        await resetServerDownstreamPermissions(agents.map((a) => a.id));
+                        Alert.alert("Done", "All permission overrides for this connection cleared.");
+                      } catch (e) {
+                        Alert.alert("Couldn't reset", e instanceof Error ? e.message : undefined);
+                      }
+                    },
+                  },
+                ],
+              )
+            }
+            style={styles.resetBtn}
+          >
+            <Text role="body" tone="danger">
+              Reset all downstream permissions
+            </Text>
+          </Touchable>
+
+          <View style={styles.sectionDivider} />
+
+          <Dropdown
+            label="Notification avatar shape"
+            value={avatarShape}
+            options={[
+              { value: "circle" as AvatarShape, label: "Circle", detail: "Rounded — matches the app" },
+              { value: "squircle" as AvatarShape, label: "Squircle", detail: "Continuously rounded square" },
+              { value: "square" as AvatarShape, label: "Square", detail: "Raw profile picture" },
+            ]}
+            onSelect={(option) => {
+              setAvatarShape(option);
+              void saveAvatarShape(option);
+            }}
+          />
+          <Text role="sub" ink={3} style={styles.permHint}>
+            Shape of the agent avatar on conversation notifications. Applies from the next notification.
+          </Text>
+
+          <View style={styles.sectionDivider} />
+
+          <Text role="bodyEm">App update</Text>
+          {updateBusy ? (
+            <View style={{ marginTop: 12 }}>
+              <Text role="body">Downloading update…</Text>
+              <Progress.Bar
+                progress={updateProgress}
+                width={null}
+                color={colors.accent}
+                style={{ marginTop: 8 }}
+              />
+            </View>
+          ) : update ? (
+            <View style={{ marginTop: 12 }}>
+              <Text role="body">
+                Version {update.version} is available (installed: {appVersion}).
+              </Text>
+              <Touchable
+                accessibilityRole="button"
+                accessibilityLabel={`Install update ${update.version}`}
+                disabled={updateBusy}
+                onPress={() => {
+                  setUpdateError(null);
+                  setUpdateBusy(true);
+                  downloadAndInstall(update.manifest, (pct) => setUpdateProgress(pct))
+                    .catch((e) => setUpdateError(e instanceof Error ? e.message : String(e)))
+                    .finally(() => setUpdateBusy(false));
+                }}
+                style={styles.resetBtn}
+              >
+                <Text role="body" tone="accent">
+                  Download & install {update.version}
+                </Text>
+              </Touchable>
+              {updateError ? (
+                <Text role="sub" tone="danger" style={{ marginTop: 8 }}>
+                  {updateError}
+                </Text>
+              ) : null}
+            </View>
+          ) : (
+            <Text role="body" style={{ marginTop: 12 }}>
+              Up to date (version {appVersion}). Checks happen automatically in the background.
+            </Text>
+          )}
+          <Text role="sub" ink={3} style={[styles.permHint, { marginTop: 16 }]}>
+            Release access token (only needed while the release host is sign-in-only). Stored on
+            this device only.
+          </Text>
+          <TextInput
+            value={updateToken}
+            onChangeText={setUpdateTokenState}
+            onEndEditing={() => void saveUpdateToken(updateToken.trim())}
+            placeholder="paste token if updates fail"
+            placeholderTextColor={colors.ink3}
+            autoCapitalize="none"
+            autoCorrect={false}
+            secureTextEntry
+            style={{ marginTop: 8, borderBottomWidth: 1, borderBottomColor: colors.surfaceEdge, paddingVertical: 6 }}
+          />
+        </Sheet>
+      ) : null}
     </Screen>
   );
 }
@@ -480,4 +793,9 @@ const styles = StyleSheet.create({
   },
   save: { flex: 1, borderRadius: radius.row, alignItems: "center" },
   actionLabel: { paddingVertical: 13 },
+  gear: { paddingHorizontal: space.sm, marginRight: space.xs },
+  permHint: { paddingTop: space.md, fontStyle: "italic" },
+  resetBtn: { paddingVertical: space.sm, alignItems: "center" },
+  sectionLabel: { paddingTop: space.sm, paddingBottom: 2 },
+  sectionDivider: { height: StyleSheet.hairlineWidth, marginVertical: space.md, backgroundColor: "transparent" },
 });

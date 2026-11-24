@@ -79,6 +79,7 @@ export function isAuthError(e: unknown): boolean {
 // constructing one per call site leaks a socket per call. Pool keyed by
 // (profile id, url, secret): OAuth rotation naturally rotates the key, and
 // evicted clients are closed (close() is idempotent in 0.8.39, never rejects).
+// Restored from main per Uncia R2 (PR #7 review).
 const clientCache = new Map<string, LettaAgentClient>();
 
 function cacheKey(conn: Connection): string {

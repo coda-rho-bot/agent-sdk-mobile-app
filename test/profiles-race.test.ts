@@ -1,3 +1,9 @@
+// ISOLATED TEST — runs in its own bun process (see package.json "test").
+// This file's mock.module("../auth/oauthTokens") is process-global and
+// irreversible in bun test: left inside src/, it silently replaces the real
+// oauthTokens module for every other test file in the same run (bun test
+// evaluates all files in one process). Moving it out + a second bun invocation
+// keeps the pollution contained to this file.
 import { expect, mock, test } from "bun:test";
 
 const asyncStorage = new Map<string, string>();
@@ -31,6 +37,9 @@ interface OAuthCredential {
   expiresAt: number;
 }
 
+<<<<<<< HEAD:test/profiles-race.test.ts
+mock.module("../src/lib/auth/oauthTokens", () => ({
+=======
 // bun's mock.module is PROCESS-GLOBAL: this replacement is visible to every
 // later test file in the same run. Spread the REAL module's exports and
 // override only what this file exercises — downstream importers (ChatSession's
@@ -39,6 +48,7 @@ const realOAuthTokens = await import("../auth/oauthTokens");
 mock.module("../auth/oauthTokens", () => ({
   ...realOAuthTokens,
   // Mocked behavior under test:
+>>>>>>> 66c7e39a1faaa0bb4a8ffda929d96c7e6d14f960:src/lib/profiles/profiles.test.ts
   parseOAuthCredential: (value: string): OAuthCredential | null => {
     const parsed = JSON.parse(value) as OAuthCredential;
     return parsed.kind === "oauth" ? parsed : null;
@@ -54,7 +64,7 @@ mock.module("../auth/oauthTokens", () => ({
   },
 }));
 
-const { deleteProfile, getSecret } = await import("./profiles");
+const { deleteProfile, getSecret } = await import("../src/lib/profiles/profiles");
 
 test("profile deletion waits for refresh and revokes the rotated credential", async () => {
   const id = "profile-race";

@@ -22,6 +22,19 @@ describe("compareVersions", () => {
     expect(compareVersions("1", "0.9.9")).toBeGreaterThan(0);
     expect(compareVersions("0.3", "0.3.0")).toBe(0);
   });
+
+  test("suffixed versions compare without NaN (mixed shapes)", () => {
+    // The trap (Uncia, PR #8): Number("0-ls") is NaN; NaN !== 0 returns
+    // falsy NaN → a NEWER suffixed remote read as not-newer against a
+    // plain local. These must all produce real numbers.
+    expect(compareVersions("0.4.1-ls.1", "0.4.0")).toBeGreaterThan(0);
+    expect(compareVersions("0.4.1", "0.4.0-ls.1")).toBeGreaterThan(0);
+    expect(compareVersions("0.4.0-ls.1", "0.4.0-ls.1")).toBe(0);
+    expect(compareVersions("0.5.0-ls.1", "0.4.0-ls.1")).toBeGreaterThan(0);
+    // Rollback protection across shapes: older is older, suffixed or not.
+    expect(compareVersions("0.3.11", "0.4.0-ls.1")).toBeLessThan(0);
+    expect(compareVersions("0.4.0", "0.4.1-ls.1")).toBeLessThan(0);
+  });
 });
 
 describe("isUpdateAvailable", () => {

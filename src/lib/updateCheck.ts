@@ -14,7 +14,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import { Linking } from "react-native";
 
-const REPO = "coda-rho-bot/agent-sdk-mobile-app";
+const REPO = "Lettasphere/agent-sdk-mobile-app";
 const CACHE_KEY = "letta.updateCheck.v1";
 /** Recheck at most every 6 hours; failed checks back off to 1 hour. */
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;

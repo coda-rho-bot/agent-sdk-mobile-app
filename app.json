@@ -2,7 +2,7 @@
   "expo": {
     "name": "Agents Chat",
     "slug": "agents-chat",
-    "version": "0.3.11",
+    "version": "0.4.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": [

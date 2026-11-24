@@ -92,8 +92,8 @@ android {
         applicationId 'com.angussoftware.agentschat'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 311
-        versionName "0.3.11"
+        versionCode 400
+        versionName "0.4.0-ls.1"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
